@@ -1,9 +1,9 @@
 // PRD Generator Constants
 
 export const STEPS = [
-  { id: 0, title: 'App Concept & Scope', subtitle: 'Define your vision', icon: 'Sparkles', gradient: 'from-orange-500 to-amber-500', bg: 'bg-orange-50', color: '#FD9B00' },
+  { id: 0, title: 'App Concept & Scope', subtitle: 'Define your vision', icon: 'Sparkles', gradient: 'from-blue-500 to-cyan-500', bg: 'bg-blue-50', color: '#0093B6' },
   { id: 1, title: 'Platform & Tech Stack', subtitle: 'Choose your foundation', icon: 'Rocket', gradient: 'from-blue-500 to-cyan-500', bg: 'bg-blue-50', color: '#0093B6' },
-  { id: 2, title: 'Visual Style Guide', subtitle: 'Build your brand', icon: 'Palette', gradient: 'from-orange-500 to-amber-500', bg: 'bg-orange-50', color: '#FD9B00' },
+  { id: 2, title: 'Visual Style Guide', subtitle: 'Build your brand', icon: 'Palette', gradient: 'from-blue-500 to-cyan-500', bg: 'bg-blue-50', color: '#0093B6' },
   { id: 3, title: 'Generate PRD', subtitle: 'Create & Deploy', icon: 'FileText', gradient: 'from-blue-500 to-cyan-500', bg: 'bg-blue-50', color: '#0093B6' }
 ];
 
@@ -14,14 +14,21 @@ export const GEOGRAPHY_OPTIONS = ['North America', 'Europe', 'Asia-Pacific', 'La
 export const FONT_OPTIONS = ['Inter', 'Roboto', 'Open Sans', 'Poppins', 'Montserrat', 'Calibri', 'Arial', 'Helvetica'];
 
 export const PLATFORM_OPTIONS = [
-  { name: 'Mobile App', emoji: '📱', sub: 'iOS & Android' },
-  { name: 'Web App', emoji: '💻', sub: 'Browser' },
+  // Row 1
   { name: 'PWA', emoji: '🚀', sub: 'Progressive' },
-  { name: 'Desktop', emoji: '🖥️', sub: 'Win/Mac' },
-  { name: 'Website', emoji: '🌐', sub: 'WordPress' },
+  { name: 'Web App', emoji: '💻', sub: 'Browser' },
+  { name: 'Mobile App', emoji: '📱', sub: 'iOS & Android' },
+  { name: 'Chatbot', emoji: '🤖', sub: 'Conversational' },
+  // Row 2
+  { name: 'Website', emoji: '🌐', sub: 'Static/CMS' },
+  { name: 'WP Plugin', emoji: '⚡', sub: 'WordPress' },
+  { name: 'Report Builder', emoji: '📊', sub: 'Data & Reports' },
   { name: 'Chrome Extension', emoji: '🔌', sub: 'Browser Ext' },
-  { name: 'WordPress Plugin', emoji: '⚡', sub: 'WP Plugin' },
-  { name: 'Other', emoji: '📦', sub: 'Custom' }
+  // Row 3
+  { name: 'CLI Tools', emoji: '🖥️', sub: 'Terminal' },
+  { name: 'Microservices', emoji: '🧩', sub: 'Backend' },
+  { name: 'AI Agents', emoji: '🧠', sub: 'Autonomous' },
+  { name: 'MCP / APIs', emoji: '🔗', sub: 'Integrations' }
 ];
 
 export const APP_IDEA_TEMPLATE = `[App Name] is a [platform type] designed for [target audience] to [primary function].
@@ -162,12 +169,37 @@ export const PRD_REVIEW_CHECKLIST = [
 ];
 
 export const DOCUMENT_CHECKLIST = [
-  { id: 'app_idea', label: 'App Idea Document', description: 'Core concept and vision' },
-  { id: 'legacy_prd', label: 'Legacy PRD or Design Document', description: 'Existing documentation' },
-  { id: 'process_flow', label: 'Process Flow Diagrams', description: 'User journeys and workflows' },
-  { id: 'data_schema', label: 'Data Schema', description: 'Database structure' },
-  { id: 'competitor_analysis', label: 'Competitor Analysis', description: 'Market research' }
+  { id: 'app_idea', label: 'App Idea Document' },
+  { id: 'design_doc', label: 'Software Design Document' },
+  { id: 'notebooklm', label: 'NotebookLM' },
+  { id: 'storm_pdf', label: 'STORM PDF' },
+  { id: 'client_expectations', label: 'Client Expectations' },
+  { id: 'process_flow', label: 'Proposed Process Flow' },
+  { id: 'data_schema', label: 'Data schema, if available' },
+  { id: 'video_walkthrough', label: 'Video walkthrough, if done' },
+  { id: 'screenshots', label: 'Screenshots of existing tool' },
+  { id: 'legacy_code', label: 'Legacy Code' },
+  { id: 'competitive_tools', label: 'List of competitive tools & websites' },
+  { id: 'integrations_3p', label: 'Integrations with 3rd party tools' },
+  { id: 'apis', label: 'APIs' },
+  { id: 'mcps', label: 'MCPs' },
+  { id: 'integrations', label: 'Integrations' }
 ];
+
+export const TECH_STACK_OPTIONS = {
+  frontend: ['React', 'Next.js', 'Vue.js', 'Angular', 'Svelte', 'Remix', 'Astro', 'Nuxt.js', 'Solid.js', 'Qwik'],
+  css: ['Tailwind CSS', 'Bootstrap', 'Material UI', 'Chakra UI', 'Styled Components', 'Ant Design', 'Sass/SCSS', 'CSS Modules', 'Shadcn UI'],
+  backend: ['Node.js/Express', 'Python/FastAPI', 'Python/Django', 'Ruby on Rails', 'Go', 'Java/Spring', '.NET', 'Supabase', 'Firebase', 'NestJS', 'Rust/Actix'],
+  llm: ['Claude Opus', 'Claude Sonnet', 'GPT-4o', 'GPT-4o-mini', 'Gemini Pro', 'Llama 3', 'Mistral', 'Grok', 'DeepSeek', 'Cohere'],
+  mcp: ['Claude MCP', 'Filesystem MCP', 'GitHub MCP', 'Slack MCP', 'Database MCP', 'Web Search MCP', 'Brave MCP', 'Memory MCP'],
+  testing: ['Jest', 'Playwright', 'Cypress', 'Vitest', 'Mocha', 'Selenium', 'Puppeteer', 'Testing Library', 'Storybook', 'Postman'],
+  deployment: ['Docker', 'AWS', 'Vercel', 'Netlify', 'Google Cloud', 'Azure', 'Railway', 'Fly.io', 'DigitalOcean', 'Heroku', 'Cloudflare'],
+  reporting: ['Zoho Analytics', 'Metabase', 'Grafana', 'Power BI', 'Tableau', 'Apache Superset', 'Looker', 'Redash'],
+  apis: ['Stripe', 'Twilio', 'SendGrid', 'Auth0', 'Firebase Auth', 'Cloudinary', 'Mapbox', 'OpenAI API', 'Anthropic API', 'AWS S3'],
+  localLlm: ['Ollama', 'LM Studio', 'llama.cpp', 'vLLM', 'GPT4All', 'Jan', 'LocalAI', 'Kobold.cpp'],
+  evalTools: ['LangSmith', 'Weights & Biases', 'MLflow', 'Arize', 'Braintrust', 'Promptfoo', 'Humanloop', 'Langfuse'],
+  additional: ['n8n', 'Zapier', 'Redis', 'PostgreSQL', 'MongoDB', 'Elasticsearch', 'RabbitMQ', 'Kafka', 'GraphQL', 'Prisma']
+};
 
 export const HELP_TEXTS = {
   appName: 'Enter a concise, memorable name for your application. This will be used throughout all documentation and branding materials. Keep it under 50 characters for optimal readability.',
@@ -220,18 +252,20 @@ export const INITIAL_FORM_DATA = {
   oneDriveLink: '',
   zipFiles: [],
   platform: '',
+  numberOfUsers: '',
+  numberOfAdmins: '',
   appStructure: { defaultScreen: '', workingScreen: '', otherScreens: '' },
   usePreviousTechStack: false,
   selectedTechStack: {
-    frontend: '', css: '', backend: '', llm: '', mcp: '', testing: '',
-    deployment: '', reporting: '', additional: '', apis: '', localLlm: '', evalTools: ''
+    frontend: [], css: [], backend: [], llm: [], mcp: [], testing: [],
+    deployment: [], reporting: [], additional: [], apis: [], localLlm: [], evalTools: []
   },
   competitors: [
     { name: '', url: '', analysis: '' },
     { name: '', url: '', analysis: '' },
     { name: '', url: '', analysis: '' }
   ],
-  primaryColor: '#FD9B00',
+  primaryColor: '#0093B6',
   secondaryColor: '#0093B6',
   accentColor: '#009688',
   primaryLogo: null,
@@ -244,7 +278,7 @@ export const INITIAL_FORM_DATA = {
   h4Size: '20px',
   h5Size: '18px',
   bodySize: '16px',
-  chartColor1: '#FD9B00',
+  chartColor1: '#0093B6',
   chartColor2: '#0093B6',
   chartColor3: '#009688',
   chartColor4: '#F59E0B',

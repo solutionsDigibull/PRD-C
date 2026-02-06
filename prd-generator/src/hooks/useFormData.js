@@ -1,6 +1,6 @@
 // Custom hook for form data management (no persistence - resets on refresh)
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { INITIAL_FORM_DATA } from '../constants';
 
 /**
@@ -11,6 +11,23 @@ export const useFormData = () => {
   const [formData, setFormData] = useState(INITIAL_FORM_DATA);
   const [autoSaveStatus, setAutoSaveStatus] = useState('saved');
   const [lastSaved, setLastSaved] = useState(null);
+  const formDataRef = useRef(formData);
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    formDataRef.current = formData;
+  }, [formData]);
+
+  // Auto-save every 5 seconds silently
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (autoSaveStatus === 'unsaved') {
+        setAutoSaveStatus('saved');
+        setLastSaved(new Date());
+      }
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [autoSaveStatus]);
 
   // No-op save function (kept for API compatibility)
   const saveFormData = useCallback(() => {

@@ -1,5 +1,9 @@
 const express = require('express');
 const router = express.Router();
+const fs = require('fs');
+const path = require('path');
+const pdfParse = require('pdf-parse');
+const mammoth = require('mammoth');
 
 // Get API configuration from environment
 const getConfig = () => ({
@@ -75,6 +79,131 @@ const callClaude = async (prompt, systemPrompt = '') => {
   const data = await response.json();
   return data.content[0].text;
 };
+
+// Fetch text content from a Google Drive or OneDrive shared link
+async function fetchDriveLinkContent(url) {
+  if (!url || !url.trim()) return { text: '', warning: 'No URL provided' };
+
+  let fetchUrl = url.trim();
+
+  // --- Google Drive URL conversions ---
+  // Format: drive.google.com/file/d/ID/view
+  const gdriveFileMatch = fetchUrl.match(/drive\.google\.com\/file\/d\/([^/?#]+)/);
+  if (gdriveFileMatch) {
+    fetchUrl = `https://drive.google.com/uc?export=download&id=${gdriveFileMatch[1]}`;
+  }
+  // Format: drive.google.com/open?id=ID
+  const gdriveOpenMatch = fetchUrl.match(/drive\.google\.com\/open\?id=([^&#]+)/);
+  if (gdriveOpenMatch) {
+    fetchUrl = `https://drive.google.com/uc?export=download&id=${gdriveOpenMatch[1]}`;
+  }
+  // Format: docs.google.com/document|spreadsheets|presentation/d/ID
+  const gdocMatch = fetchUrl.match(/docs\.google\.com\/(document|spreadsheets|presentation)\/d\/([^/?#]+)/);
+  if (gdocMatch) {
+    fetchUrl = `https://docs.google.com/${gdocMatch[1]}/d/${gdocMatch[2]}/export?format=${gdocMatch[1] === 'spreadsheets' ? 'csv' : 'txt'}`;
+  }
+
+  // --- OneDrive URL conversions ---
+  if (fetchUrl.includes('1drv.ms') || fetchUrl.includes('onedrive.live.com') || fetchUrl.includes('sharepoint.com')) {
+    if (fetchUrl.includes('onedrive.live.com')) {
+      fetchUrl = fetchUrl.replace('redir?', 'download?');
+    }
+    if (!fetchUrl.includes('download=1')) {
+      fetchUrl += (fetchUrl.includes('?') ? '&' : '?') + 'download=1';
+    }
+  }
+
+  // Fetch with redirect following
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+
+    const response = await fetch(fetchUrl, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      return { text: '', warning: 'Could not access the link. Make sure it is publicly shared.' };
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+
+    // Text-based content
+    if (contentType.includes('text/') || contentType.includes('json') || contentType.includes('csv') || contentType.includes('xml')) {
+      let text = await response.text();
+
+      // Google Drive sometimes returns an HTML confirmation page for large files
+      // Detect it and try the confirm link
+      if (contentType.includes('text/html') && text.includes('drive.usercontent.google.com') || text.includes('download_warning') || text.includes('confirm=')) {
+        const confirmMatch = text.match(/confirm=([^&"']+)/);
+        const idMatch = url.match(/(?:id=|\/d\/)([^/?&#]+)/);
+        if (confirmMatch && idMatch) {
+          try {
+            const confirmUrl = `https://drive.google.com/uc?export=download&confirm=${confirmMatch[1]}&id=${idMatch[1]}`;
+            const controller2 = new AbortController();
+            const timeout2 = setTimeout(() => controller2.abort(), 20000);
+            const resp2 = await fetch(confirmUrl, {
+              signal: controller2.signal,
+              redirect: 'follow',
+              headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+            });
+            clearTimeout(timeout2);
+            if (resp2.ok) {
+              const ct2 = resp2.headers.get('content-type') || '';
+              if (ct2.includes('text/') || ct2.includes('json') || ct2.includes('csv')) {
+                text = await resp2.text();
+              } else if (ct2.includes('pdf')) {
+                const buffer = Buffer.from(await resp2.arrayBuffer());
+                const data = await pdfParse(buffer);
+                return { text: data.text || '' };
+              } else if (ct2.includes('word') || ct2.includes('openxmlformats')) {
+                const buffer = Buffer.from(await resp2.arrayBuffer());
+                const result = await mammoth.extractRawText({ buffer });
+                return { text: result.value || '' };
+              }
+            }
+          } catch {
+            // Fall through to use whatever we got
+          }
+        }
+
+        // If it's still an HTML page (Google login/share page), extract any useful text
+        if (text.includes('<html') && text.length < 500) {
+          return { text: '', warning: 'Google Drive returned a login/sharing page. Make sure the link is set to "Anyone with the link can view".' };
+        }
+      }
+
+      if (text.length > 50000) text = text.substring(0, 50000) + '\n... [truncated]';
+      return { text };
+    }
+
+    // PDF content
+    if (contentType.includes('pdf')) {
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const data = await pdfParse(buffer);
+      let text = data.text || '';
+      if (text.length > 50000) text = text.substring(0, 50000) + '\n... [truncated]';
+      return { text };
+    }
+
+    // DOCX content
+    if (contentType.includes('word') || contentType.includes('openxmlformats-officedocument.wordprocessingml')) {
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const result = await mammoth.extractRawText({ buffer });
+      let text = result.value || '';
+      if (text.length > 50000) text = text.substring(0, 50000) + '\n... [truncated]';
+      return { text };
+    }
+
+    // Other binary — just note it
+    return { text: `[Binary file: ${contentType}]` };
+  } catch (err) {
+    return { text: '', warning: 'Could not fetch content from the link. Ensure the file is publicly accessible.' };
+  }
+}
 
 // Generic AI call based on provider
 const callAI = async (prompt, systemPrompt = '') => {
@@ -172,36 +301,74 @@ Return only the bulleted list, no explanations.`;
   }
 });
 
-// Recommend APIs
+// Recommend full tech stack
 router.post('/recommend-apis', async (req, res, next) => {
   try {
     const { appName, appIdea, platform, techStack } = req.body;
 
-    const prompt = `For a ${platform} called "${appName}" that "${appIdea}" with tech stack: ${JSON.stringify(techStack)}
+    // Show what's already selected so AI can complement
+    const currentSelections = Object.entries(techStack || {})
+      .filter(([k, v]) => Array.isArray(v) ? v.length > 0 : v)
+      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+      .join('\n');
 
-Recommend:
-1. Essential APIs (payment, email, SMS, etc.)
-2. MCP (Model Context Protocol) integrations if relevant
+    const prompt = `For a ${platform || 'web'} application called "${appName}" that "${appIdea}", recommend the best technology stack.
 
-Format your response as:
-APIS: [comma-separated list of recommended APIs]
-MCP: [comma-separated list of MCP integrations]
+${currentSelections ? `Current selections:\n${currentSelections}\n` : ''}
+Recommend technologies for ALL of these categories:
+- frontend: UI framework (e.g., React, Next.js, Vue.js)
+- css: CSS framework/library (e.g., Tailwind CSS, Material UI)
+- backend: Server/backend (e.g., Node.js/Express, Supabase, Python/FastAPI)
+- llm: LLM engine (e.g., Claude Sonnet, GPT-4o)
+- mcp: MCP integrations (e.g., Claude MCP, GitHub MCP)
+- testing: Testing tools (e.g., Jest, Playwright, Cypress)
+- deployment: Deployment platform (e.g., Vercel, Docker, AWS)
+- reporting: Reporting/analytics (e.g., Metabase, Grafana)
+- apis: Essential APIs (e.g., Stripe, SendGrid, Auth0)
+- localLlm: Local LLM tools (e.g., Ollama, LM Studio)
+- evalTools: Eval/monitoring tools (e.g., LangSmith, Promptfoo)
+- additional: Additional tools (e.g., Redis, PostgreSQL, GraphQL)
 
-Be specific with API names (e.g., "Stripe API" not just "payment API").`;
+Return ONLY valid JSON with this exact format (each value is an array of 2-4 recommended items):
+{"frontend":["React"],"css":["Tailwind CSS"],"backend":["Node.js/Express"],"llm":["Claude Sonnet"],"mcp":["Claude MCP"],"testing":["Jest"],"deployment":["Vercel"],"reporting":["Metabase"],"apis":["Stripe"],"localLlm":["Ollama"],"evalTools":["LangSmith"],"additional":["PostgreSQL"]}
+
+Only recommend what makes sense for this specific app. If a category is not relevant, use an empty array [].`;
 
     const response = await callAI(prompt);
 
-    // Parse the response
-    const apisMatch = response.match(/APIS:\s*(.+)/i);
-    const mcpMatch = response.match(/MCP:\s*(.+)/i);
+    // Parse JSON from response
+    let recommendations = {};
+    try {
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        recommendations = JSON.parse(jsonMatch[0]);
+      }
+    } catch (parseErr) {
+      // Fallback: try line-by-line parsing
+      const fields = ['frontend', 'css', 'backend', 'llm', 'mcp', 'testing', 'deployment', 'reporting', 'apis', 'localLlm', 'evalTools', 'additional'];
+      fields.forEach(field => {
+        const match = response.match(new RegExp(`${field}[:\\s]+(.+)`, 'i'));
+        if (match) {
+          recommendations[field] = match[1].split(',').map(s => s.trim().replace(/["\[\]]/g, '')).filter(Boolean);
+        }
+      });
+    }
 
-    res.json({
-      success: true,
-      data: {
-        apis: apisMatch ? apisMatch[1].trim() : '',
-        mcp: mcpMatch ? mcpMatch[1].trim() : ''
+    // Ensure all values are arrays
+    const allFields = ['frontend', 'css', 'backend', 'llm', 'mcp', 'testing', 'deployment', 'reporting', 'apis', 'localLlm', 'evalTools', 'additional'];
+    const result = {};
+    allFields.forEach(field => {
+      const val = recommendations[field];
+      if (Array.isArray(val)) {
+        result[field] = val;
+      } else if (typeof val === 'string' && val) {
+        result[field] = val.split(',').map(s => s.trim()).filter(Boolean);
+      } else {
+        result[field] = [];
       }
     });
+
+    res.json({ success: true, data: result });
   } catch (error) {
     next(error);
   }
@@ -325,7 +492,7 @@ ${formData.goal}
 - Other Screens: ${formData.appStructure?.otherScreens || ''}
 
 **Technology Stack:**
-${Object.entries(formData.selectedTechStack || {}).filter(([k, v]) => v).map(([k, v]) => `- ${k}: ${v}`).join('\n')}
+${Object.entries(formData.selectedTechStack || {}).filter(([k, v]) => Array.isArray(v) ? v.length > 0 : v).map(([k, v]) => `- ${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join('\n')}
 
 **Competitors:**
 ${(formData.competitors || []).filter(c => c.name).map(c => `- ${c.name}: ${c.analysis}`).join('\n')}
@@ -430,7 +597,7 @@ PROJECT INFORMATION:
 - Problem Statement: ${formData.problemStatement}
 - Target Audience: ${(formData.targetAudienceDemography || []).join(', ')} in ${(formData.targetAudienceGeography || []).join(', ')}
 - Platform: ${formData.platform}
-- Tech Stack: ${Object.entries(formData.selectedTechStack || {}).filter(([k, v]) => v).map(([k, v]) => `${k}: ${v}`).join(', ')}
+- Tech Stack: ${Object.entries(formData.selectedTechStack || {}).filter(([k, v]) => Array.isArray(v) ? v.length > 0 : v).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join(', ')}
 - Timeline: ${timelineInfo || 'To be discussed'}
 ${milestones ? `\nMilestones:\n${milestones}` : ''}
 
@@ -501,6 +668,515 @@ Return only the enhanced prompt text, no explanations or headers.`;
 
     const result = await callAI(prompt, systemPrompt);
     res.json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Analyze uploaded files and extract PRD-relevant information
+router.post('/analyze-files', async (req, res, next) => {
+  try {
+    const { files, currentFormData } = req.body;
+
+    if (!files || files.length === 0) {
+      return res.json({ success: true, data: { fields: {}, relevantCount: 0 } });
+    }
+
+    // Extract text content from files
+    const fileContents = files.map(file => {
+      const isTextFile = file.type && (
+        file.type.startsWith('text/') ||
+        file.type === 'application/json' ||
+        file.type === 'application/csv' ||
+        file.type === 'text/csv'
+      );
+
+      if (isTextFile && file.base64) {
+        try {
+          const decoded = Buffer.from(file.base64, 'base64').toString('utf-8');
+          return `[${file.name}]:\n${decoded}`;
+        } catch {
+          return `[${file.name}]: <${file.type} file - could not decode>`;
+        }
+      }
+
+      // For non-text files, provide name and type as context
+      return `[${file.name}]: <${file.type || 'unknown type'} file - name suggests ${file.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ')}>`;
+    }).join('\n\n');
+
+    // Determine which fields are currently empty
+    const targetFields = {
+      appName: 'App name',
+      appIdea: 'Brief app description (max 100 chars)',
+      problemStatement: 'Problems the app solves',
+      goal: 'Primary measurable objective',
+      outOfScope: 'Features excluded from v1.0',
+      platform: 'Target platform (e.g., Web App, Mobile App, Cross-Platform)',
+      prdPromptTemplate: 'Custom PRD generation prompt'
+    };
+
+    const emptyFields = Object.entries(targetFields)
+      .filter(([key]) => !currentFormData[key] || currentFormData[key].trim() === '')
+      .map(([key, desc]) => `- ${key}: ${desc}`)
+      .join('\n');
+
+    if (!emptyFields) {
+      return res.json({ success: true, data: { fields: {}, relevantCount: 0 } });
+    }
+
+    const prompt = `You are reading the full content of uploaded files. The files will NOT have neat headings like "Problem Statement" or "Goal". They may be meeting notes, brainstorm docs, pitch decks, emails, requirements lists, or any unstructured text.
+
+Your job: read everything carefully, understand the product/app being described, then extract and map relevant information to the PRD fields listed below.
+
+--- FILE CONTENTS START ---
+${fileContents}
+--- FILE CONTENTS END ---
+
+Map information to these currently empty PRD fields:
+${emptyFields}
+
+Instructions:
+- Read the entire content holistically — do not look for literal field-name headings.
+- Infer the app name from context (product name, project title, etc.).
+- Infer the problem statement from pain points, user complaints, market gaps, or "why" descriptions.
+- Infer the goal from success criteria, KPIs, objectives, or desired outcomes.
+- Infer out-of-scope from anything explicitly deferred, deprioritized, or marked as future/v2.
+- For appIdea, write a concise one-liner (max 100 chars) summarizing what the app does.
+- For platform, only fill if the content clearly mentions web, mobile, iOS, Android, desktop, etc.
+- Only include fields where you found genuinely relevant information. Do not guess or fabricate.
+- If nothing relevant is found, return an empty object {}.
+
+Return ONLY a raw JSON object. No markdown, no code blocks, no explanation.`;
+
+    const systemPrompt = 'You are a senior product analyst. You specialize in reading unstructured documents — meeting notes, emails, brainstorms, pitch decks — and extracting structured product requirements. Be accurate. Never fabricate. Return only valid JSON.';
+
+    const result = await callAI(prompt, systemPrompt);
+
+    // Parse AI response as JSON
+    let fields = {};
+    try {
+      const jsonMatch = result.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        fields = JSON.parse(jsonMatch[0]);
+      }
+    } catch (e) {
+      console.error('Failed to parse AI file analysis response:', e);
+      fields = {};
+    }
+
+    // Filter to only target fields that are empty
+    const validFields = {};
+    for (const key of Object.keys(targetFields)) {
+      if (fields[key] && (!currentFormData[key] || currentFormData[key].trim() === '')) {
+        validFields[key] = fields[key];
+      }
+    }
+
+    const relevantCount = Object.keys(validFields).length;
+
+    res.json({ success: true, data: { fields: validFields, relevantCount } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Analyze content from a Google Drive or OneDrive shared link
+router.post('/analyze-link', async (req, res, next) => {
+  try {
+    const { url, source, currentFormData } = req.body;
+
+    if (!url || !url.trim()) {
+      return res.status(400).json({ success: false, error: 'No URL provided' });
+    }
+
+    const { text: textContent, warning } = await fetchDriveLinkContent(url);
+
+    if (warning && !textContent.trim()) {
+      return res.json({ success: true, data: { fields: {}, relevantCount: 0, warning } });
+    }
+
+    if (!textContent.trim()) {
+      return res.json({ success: true, data: { fields: {}, relevantCount: 0, warning: 'The linked document appears to be empty.' } });
+    }
+
+    // Determine which fields are currently empty
+    const targetFields = {
+      appName: 'App name',
+      appIdea: 'Brief app description (max 100 chars)',
+      problemStatement: 'Problems the app solves',
+      goal: 'Primary measurable objective',
+      outOfScope: 'Features excluded from v1.0',
+      platform: 'Target platform (e.g., Web App, Mobile App, Cross-Platform)',
+      prdPromptTemplate: 'Custom PRD generation prompt'
+    };
+
+    const emptyFields = Object.entries(targetFields)
+      .filter(([key]) => !currentFormData[key] || currentFormData[key].trim() === '')
+      .map(([key, desc]) => `- ${key}: ${desc}`)
+      .join('\n');
+
+    if (!emptyFields) {
+      return res.json({ success: true, data: { fields: {}, relevantCount: 0 } });
+    }
+
+    const prompt = `You are reading content fetched from a ${source || 'cloud storage'} shared link. The content may be a document, spreadsheet, notes, or any unstructured text. It will NOT have neat headings like "Problem Statement" or "Goal".
+
+Your job: read everything carefully, understand the product/app being described, then extract and map relevant information to the PRD fields listed below.
+
+--- DOCUMENT CONTENT START ---
+${textContent}
+--- DOCUMENT CONTENT END ---
+
+Map information to these currently empty PRD fields:
+${emptyFields}
+
+Instructions:
+- Read the entire content holistically — do not look for literal field-name headings.
+- Infer the app name from context (product name, project title, etc.).
+- Infer the problem statement from pain points, user complaints, market gaps, or "why" descriptions.
+- Infer the goal from success criteria, KPIs, objectives, or desired outcomes.
+- Infer out-of-scope from anything explicitly deferred, deprioritized, or marked as future/v2.
+- For appIdea, write a concise one-liner (max 100 chars) summarizing what the app does.
+- For platform, only fill if the content clearly mentions web, mobile, iOS, Android, desktop, etc.
+- Only include fields where you found genuinely relevant information. Do not guess or fabricate.
+- If nothing relevant is found, return an empty object {}.
+
+Return ONLY a raw JSON object. No markdown, no code blocks, no explanation.`;
+
+    const systemPrompt = 'You are a senior product analyst. You specialize in reading unstructured documents and extracting structured product requirements. Be accurate. Never fabricate. Return only valid JSON.';
+
+    const result = await callAI(prompt, systemPrompt);
+
+    let fields = {};
+    try {
+      const jsonMatch = result.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        fields = JSON.parse(jsonMatch[0]);
+      }
+    } catch (e) {
+      console.error('Failed to parse AI link analysis response:', e);
+      fields = {};
+    }
+
+    // Filter to only target fields that are empty
+    const validFields = {};
+    for (const key of Object.keys(targetFields)) {
+      if (fields[key] && (!currentFormData[key] || currentFormData[key].trim() === '')) {
+        validFields[key] = fields[key];
+      }
+    }
+
+    const relevantCount = Object.keys(validFields).length;
+    res.json({ success: true, data: { fields: validFields, relevantCount } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// === Claude Cowork: scan local folder + all sources, analyze with AI ===
+
+const SKIP_DIRS = new Set([
+  'node_modules', '.git', '__pycache__', '.next', 'dist', 'build',
+  'coverage', 'vendor', '.cache', '.vscode', '.idea', 'venv', 'env'
+]);
+
+const SKIP_FILE_PATTERNS = ['.env', 'credentials', 'secret', 'password', '.key', '.pem', '.pfx'];
+
+const READABLE_EXTENSIONS = new Set([
+  '.txt', '.md', '.csv', '.json', '.log', '.xml', '.yaml', '.yml',
+  '.html', '.htm', '.js', '.ts', '.jsx', '.tsx', '.py', '.java',
+  '.sql', '.sh', '.bat', '.ini', '.cfg', '.conf', '.toml'
+]);
+
+const MAX_SCAN_DEPTH = 3;
+const MAX_FILES = 50;
+const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB
+const MAX_TOTAL_TEXT = 50000;
+
+// Recursively scan a directory for readable files
+function scanDirectory(dirPath, depth = 0) {
+  const results = [];
+  if (depth > MAX_SCAN_DEPTH) return results;
+
+  let entries;
+  try {
+    entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  } catch {
+    return results;
+  }
+
+  for (const entry of entries) {
+    if (results.length >= MAX_FILES) break;
+
+    const fullPath = path.join(dirPath, entry.name);
+
+    if (entry.isDirectory()) {
+      if (SKIP_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
+      results.push(...scanDirectory(fullPath, depth + 1));
+    } else if (entry.isFile()) {
+      // Skip sensitive files
+      const nameLower = entry.name.toLowerCase();
+      if (SKIP_FILE_PATTERNS.some(p => nameLower.includes(p))) continue;
+
+      const ext = path.extname(nameLower);
+      const isReadableText = READABLE_EXTENSIONS.has(ext);
+      const isPdf = ext === '.pdf';
+      const isDocx = ext === '.docx';
+
+      if (!isReadableText && !isPdf && !isDocx) continue;
+
+      try {
+        const stat = fs.statSync(fullPath);
+        if (stat.size > MAX_FILE_SIZE || stat.size === 0) continue;
+        results.push({ path: fullPath, name: entry.name, ext, size: stat.size, isPdf, isDocx });
+      } catch {
+        continue;
+      }
+    }
+
+    if (results.length >= MAX_FILES) break;
+  }
+
+  return results;
+}
+
+// Extract text from a single local file
+async function extractFileText(fileInfo) {
+  try {
+    if (fileInfo.isPdf) {
+      const buffer = fs.readFileSync(fileInfo.path);
+      const data = await pdfParse(buffer);
+      return data.text || '';
+    }
+    if (fileInfo.isDocx) {
+      const buffer = fs.readFileSync(fileInfo.path);
+      const result = await mammoth.extractRawText({ buffer });
+      return result.value || '';
+    }
+    // Plain text
+    return fs.readFileSync(fileInfo.path, 'utf-8');
+  } catch {
+    return `[Could not read ${fileInfo.name}]`;
+  }
+}
+
+router.post('/cowork-fetch', async (req, res, next) => {
+  try {
+    const {
+      folderPath,
+      uploadedFiles,
+      googleDriveLink,
+      oneDriveLink,
+      currentFormData,
+      sources
+    } = req.body;
+
+    const allTexts = [];
+    const scannedFiles = [];
+    let totalChars = 0;
+
+    // --- 1. Scan local folder ---
+    if (sources?.localFolder && folderPath && folderPath.trim()) {
+      const rawPath = folderPath.trim();
+
+      // Security: block path traversal
+      if (rawPath.includes('..')) {
+        return res.status(400).json({ success: false, error: 'Invalid folder path' });
+      }
+
+      // Use the path as-is — normalize slashes but don't resolve against CWD
+      const cleanPath = path.normalize(rawPath);
+
+      if (!fs.existsSync(cleanPath) || !fs.statSync(cleanPath).isDirectory()) {
+        return res.json({
+          success: true,
+          data: { fields: {}, relevantCount: 0, scannedCount: 0, warning: `Folder not found: ${cleanPath}` }
+        });
+      }
+
+      const localFiles = scanDirectory(cleanPath);
+
+      for (const fileInfo of localFiles) {
+        if (totalChars >= MAX_TOTAL_TEXT) break;
+        const text = await extractFileText(fileInfo);
+        const trimmed = text.substring(0, MAX_TOTAL_TEXT - totalChars);
+        allTexts.push(`[LOCAL: ${fileInfo.name}]:\n${trimmed}`);
+        scannedFiles.push({ name: fileInfo.name, source: 'local' });
+        totalChars += trimmed.length;
+      }
+    }
+
+    // --- 2. Process uploaded files ---
+    if (sources?.uploadedFiles && uploadedFiles && uploadedFiles.length > 0) {
+      for (const file of uploadedFiles) {
+        if (totalChars >= MAX_TOTAL_TEXT) break;
+
+        const isTextFile = file.type && (
+          file.type.startsWith('text/') ||
+          file.type === 'application/json' ||
+          file.type === 'application/csv' ||
+          file.type === 'text/csv'
+        );
+
+        if (isTextFile && file.base64) {
+          try {
+            const base64Data = file.base64.includes(',') ? file.base64.split(',')[1] : file.base64;
+            const decoded = Buffer.from(base64Data, 'base64').toString('utf-8');
+            const trimmed = decoded.substring(0, MAX_TOTAL_TEXT - totalChars);
+            allTexts.push(`[UPLOADED: ${file.name}]:\n${trimmed}`);
+            scannedFiles.push({ name: file.name, source: 'uploaded' });
+            totalChars += trimmed.length;
+          } catch {
+            allTexts.push(`[UPLOADED: ${file.name}]: <could not decode>`);
+            scannedFiles.push({ name: file.name, source: 'uploaded' });
+          }
+        } else if (file.name && (file.name.endsWith('.pdf') || file.name.endsWith('.docx')) && file.base64) {
+          try {
+            const base64Data = file.base64.includes(',') ? file.base64.split(',')[1] : file.base64;
+            const buffer = Buffer.from(base64Data, 'base64');
+            let text = '';
+            if (file.name.endsWith('.pdf')) {
+              const data = await pdfParse(buffer);
+              text = data.text || '';
+            } else {
+              const result = await mammoth.extractRawText({ buffer });
+              text = result.value || '';
+            }
+            const trimmed = text.substring(0, MAX_TOTAL_TEXT - totalChars);
+            allTexts.push(`[UPLOADED: ${file.name}]:\n${trimmed}`);
+            scannedFiles.push({ name: file.name, source: 'uploaded' });
+            totalChars += trimmed.length;
+          } catch {
+            allTexts.push(`[UPLOADED: ${file.name}]: <binary file>`);
+            scannedFiles.push({ name: file.name, source: 'uploaded' });
+          }
+        } else {
+          allTexts.push(`[UPLOADED: ${file.name}]: <${file.type || 'unknown'} file>`);
+          scannedFiles.push({ name: file.name, source: 'uploaded' });
+        }
+      }
+    }
+
+    // --- 3. Fetch Google Drive link ---
+    if (sources?.googleDrive && googleDriveLink && googleDriveLink.trim()) {
+      try {
+        const { text } = await fetchDriveLinkContent(googleDriveLink);
+        if (text && text.trim()) {
+          const trimmed = text.substring(0, MAX_TOTAL_TEXT - totalChars);
+          allTexts.push(`[GOOGLE DRIVE]:\n${trimmed}`);
+          scannedFiles.push({ name: 'Google Drive document', source: 'google_drive' });
+          totalChars += trimmed.length;
+        }
+      } catch {
+        // Skip Google Drive on error
+      }
+    }
+
+    // --- 4. Fetch OneDrive link ---
+    if (sources?.oneDrive && oneDriveLink && oneDriveLink.trim()) {
+      try {
+        const { text } = await fetchDriveLinkContent(oneDriveLink);
+        if (text && text.trim()) {
+          const trimmed = text.substring(0, MAX_TOTAL_TEXT - totalChars);
+          allTexts.push(`[ONEDRIVE]:\n${trimmed}`);
+          scannedFiles.push({ name: 'OneDrive document', source: 'onedrive' });
+          totalChars += trimmed.length;
+        }
+      } catch {
+        // Skip OneDrive on error
+      }
+    }
+
+    // --- 5. Check if we got anything ---
+    if (allTexts.length === 0) {
+      return res.json({
+        success: true,
+        data: { fields: {}, relevantCount: 0, scannedCount: 0, warning: 'No readable content found from any source.' }
+      });
+    }
+
+    // --- 6. Determine empty fields ---
+    const targetFields = {
+      appName: 'App name',
+      appIdea: 'Brief app description (max 100 chars)',
+      problemStatement: 'Problems the app solves',
+      goal: 'Primary measurable objective',
+      outOfScope: 'Features excluded from v1.0',
+      platform: 'Target platform (e.g., Web App, Mobile App, Cross-Platform)',
+      prdPromptTemplate: 'Custom PRD generation prompt'
+    };
+
+    const emptyFields = Object.entries(targetFields)
+      .filter(([key]) => !currentFormData[key] || currentFormData[key].trim() === '')
+      .map(([key, desc]) => `- ${key}: ${desc}`)
+      .join('\n');
+
+    if (!emptyFields) {
+      return res.json({
+        success: true,
+        data: { fields: {}, relevantCount: 0, scannedCount: scannedFiles.length }
+      });
+    }
+
+    // --- 7. AI analysis ---
+    const combinedContent = allTexts.join('\n\n---\n\n');
+
+    const prompt = `You are reading content gathered from multiple sources: local files, uploaded documents, Google Drive, and OneDrive. The content may be meeting notes, design docs, brainstorms, code files, schemas, or any unstructured text. Files will NOT have neat headings like "Problem Statement" or "Goal".
+
+Your job: read everything holistically, understand the product/app being described, then extract and map relevant information to the PRD fields below.
+
+--- ALL DOCUMENT CONTENTS (${scannedFiles.length} files) ---
+${combinedContent}
+--- END OF DOCUMENTS ---
+
+Map information to these currently empty PRD fields:
+${emptyFields}
+
+Instructions:
+- Read all content holistically — cross-reference across files for a complete picture.
+- Infer the app name from context (product name, project title, etc.).
+- Infer the problem statement from pain points, user complaints, market gaps, or "why" descriptions.
+- Infer the goal from success criteria, KPIs, objectives, or desired outcomes.
+- Infer out-of-scope from anything explicitly deferred, deprioritized, or marked as future/v2.
+- For appIdea, write a concise one-liner (max 100 chars) summarizing what the app does.
+- For platform, only fill if content clearly mentions web, mobile, iOS, Android, desktop, etc.
+- Only include fields where you found genuinely relevant information. Do not guess or fabricate.
+- If nothing relevant is found, return an empty object {}.
+
+Return ONLY a raw JSON object. No markdown, no code blocks, no explanation.`;
+
+    const systemPrompt = 'You are a senior product analyst. You specialize in reading diverse unstructured documents — meeting notes, code files, design docs, schemas, emails — and extracting structured product requirements. Be accurate. Never fabricate. Return only valid JSON.';
+
+    const result = await callAI(prompt, systemPrompt);
+
+    let fields = {};
+    try {
+      const jsonMatch = result.match(/\{[\s\S]*\}/);
+      if (jsonMatch) fields = JSON.parse(jsonMatch[0]);
+    } catch (e) {
+      console.error('Failed to parse cowork AI response:', e);
+      fields = {};
+    }
+
+    // Filter to only empty target fields
+    const validFields = {};
+    for (const key of Object.keys(targetFields)) {
+      if (fields[key] && (!currentFormData[key] || currentFormData[key].trim() === '')) {
+        validFields[key] = fields[key];
+      }
+    }
+
+    const relevantCount = Object.keys(validFields).length;
+
+    res.json({
+      success: true,
+      data: {
+        fields: validFields,
+        relevantCount,
+        scannedCount: scannedFiles.length,
+        scannedFiles
+      }
+    });
   } catch (error) {
     next(error);
   }

@@ -92,6 +92,21 @@ export const useAI = () => {
     return executeAI(() => aiService.enhancePrdPrompt(currentPrompt, appName, appIdea));
   }, [executeAI]);
 
+  // Analyze uploaded files for auto-fill
+  const analyzeUploadedFiles = useCallback(async (files, currentFormData) => {
+    return executeAI(() => aiService.analyzeUploadedFiles(files, currentFormData));
+  }, [executeAI]);
+
+  // Analyze a cloud drive link for auto-fill
+  const analyzeDriveLink = useCallback(async (url, source, currentFormData) => {
+    return executeAI(() => aiService.analyzeDriveLink(url, source, currentFormData));
+  }, [executeAI]);
+
+  // Claude Cowork: scan all sources and analyze
+  const coworkFetch = useCallback(async (payload) => {
+    return executeAI(() => aiService.coworkFetch(payload));
+  }, [executeAI]);
+
   // Refresh backend status
   const refreshStatus = useCallback(async () => {
     const status = await aiService.checkStatus();
@@ -125,6 +140,9 @@ export const useAI = () => {
     generatePRD,
     generateProposalCoverLetter,
     enhancePrdPrompt,
+    analyzeUploadedFiles,
+    analyzeDriveLink,
+    coworkFetch,
 
     // Utilities
     clearError,

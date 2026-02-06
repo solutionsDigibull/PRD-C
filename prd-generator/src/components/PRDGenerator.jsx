@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowRight, ArrowLeft, Sparkles, Rocket, Palette, FileText, Wand2, Upload, Check, X, Save, Search, Link, FolderArchive, Users, Send, HelpCircle, Download, Camera, Eye, CheckCircle2, FileCheck, Settings, AlertCircle, Loader2 } from 'lucide-react';
+import { ArrowRight, ArrowLeft, Sparkles, Rocket, Palette, FileText, Wand2, Upload, Check, X, Search, Link, FolderArchive, Users, Send, Info, Download, Camera, Eye, CheckCircle2, FileCheck, Settings, AlertCircle, Loader2, RefreshCw, FolderSearch, Play } from 'lucide-react';
 
 // Import hooks and utilities
 import { useFormData, useAI } from '../hooks';
@@ -15,6 +15,7 @@ import {
   GEOGRAPHY_OPTIONS,
   FONT_OPTIONS,
   PLATFORM_OPTIONS,
+  TECH_STACK_OPTIONS,
   APP_IDEA_TEMPLATE,
   PROPOSAL_TEMPLATES,
   PRD_REVIEW_CHECKLIST,
@@ -25,11 +26,82 @@ import {
   DEFAULT_PRD_PROMPT
 } from '../constants';
 
+// Multi-select dropdown for Technology Stack fields
+function TechStackSelect({ label, selected, options, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const safeSelected = Array.isArray(selected) ? selected : (selected ? [selected] : []);
+  const filtered = (options || []).filter(opt =>
+    opt.toLowerCase().includes(search.toLowerCase()) && !safeSelected.includes(opt)
+  );
+
+  const addItem = (item) => {
+    onChange([...safeSelected, item]);
+    setSearch('');
+  };
+  const removeItem = (item) => onChange(safeSelected.filter(i => i !== item));
+  const addCustom = () => {
+    const val = search.trim();
+    if (val && !safeSelected.includes(val)) {
+      addItem(val);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-xl border-2 border-gray-200 p-3" ref={ref}>
+      <h4 className="font-bold text-gray-800 mb-2 text-xs">{label}</h4>
+      {/* Selected chips */}
+      <div className="flex flex-wrap gap-1 mb-2 min-h-[24px]">
+        {safeSelected.map(item => (
+          <span key={item} className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">
+            {item}
+            <button onClick={() => removeItem(item)} className="hover:text-blue-900 ml-0.5">&times;</button>
+          </span>
+        ))}
+      </div>
+      {/* Search input */}
+      <div className="relative">
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => { setSearch(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustom(); } }}
+          className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs focus:border-blue-400 outline-none"
+          placeholder="Type to search or add..."
+        />
+        {/* Dropdown */}
+        {open && (filtered.length > 0 || search.trim()) && (
+          <div className="absolute z-50 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-40 overflow-y-auto">
+            {filtered.map(opt => (
+              <button key={opt} onClick={() => addItem(opt)} className="w-full text-left px-3 py-1.5 text-xs hover:bg-blue-50 transition-colors">
+                {opt}
+              </button>
+            ))}
+            {search.trim() && !options.includes(search.trim()) && !safeSelected.includes(search.trim()) && (
+              <button onClick={addCustom} className="w-full text-left px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 border-t border-gray-100">
+                + Add "{search.trim()}"
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function PRDGenerator() {
   // Form data hook
   const {
     formData,
-    autoSaveStatus,
     handleInputChange,
     handleNestedChange,
     handleArrayItemUpdate,
@@ -57,6 +129,9 @@ export default function PRDGenerator() {
     generatePRD: generatePRDFromAI,
     generateProposalCoverLetter,
     enhancePrdPrompt,
+    analyzeUploadedFiles,
+    analyzeDriveLink,
+    coworkFetch,
     clearError,
     refreshStatus
   } = useAI();
@@ -82,6 +157,15 @@ export default function PRDGenerator() {
   const [showDetailedReport, setShowDetailedReport] = useState(false);
   const [generatedProposalContent, setGeneratedProposalContent] = useState({ coverLetter: '', salesProposal: '' });
   const [activeProposalTab, setActiveProposalTab] = useState('coverLetter');
+  const [pendingFileFields, setPendingFileFields] = useState(null);
+  const [showFileAnalysisDialog, setShowFileAnalysisDialog] = useState(false);
+  const [driveSynced, setDriveSynced] = useState({ google: false, onedrive: false });
+  const [driveSyncing, setDriveSyncing] = useState({ google: false, onedrive: false });
+  const [allowClaudeCowork, setAllowClaudeCowork] = useState(false);
+  const [coworkFolderPath, setCoworkFolderPath] = useState('');
+  const [coworkSources, setCoworkSources] = useState({ localFolder: true, uploadedFiles: true, googleDrive: true, oneDrive: true });
+  const [coworkRunning, setCoworkRunning] = useState(false);
+  const [coworkResult, setCoworkResult] = useState(null);
 
   // Refs for click outside handling
   const demographyRef = useRef(null);
@@ -183,16 +267,47 @@ export default function PRDGenerator() {
     removeFromArrayByValue('targetAudienceGeography', option);
   };
 
-  // File upload handler with base64 conversion
+  // File upload handler with base64 conversion, executable blocking, and AI auto-fill
   const handleFileUpload = async (event, type = 'files') => {
     const files = event.target.files;
     if (!files || files.length === 0) return;
+
+    // Block executable files
+    const blockedExtensions = ['.exe', '.bat', '.cmd', '.sh', '.msi', '.dll', '.com', '.scr'];
+    const blockedFiles = Array.from(files).filter(f =>
+      blockedExtensions.some(ext => f.name.toLowerCase().endsWith(ext))
+    );
+    if (blockedFiles.length > 0) {
+      showNotification(`Blocked: ${blockedFiles.map(f => f.name).join(', ')} — executable files are not allowed`, 'error');
+      event.target.value = '';
+      return;
+    }
 
     try {
       const convertedFiles = await filesToBase64(files);
       const field = type === 'photos' ? 'uploadedPhotos' : 'uploadedFiles';
       handleInputChange(field, [...formData[field], ...convertedFiles]);
       showNotification(`${convertedFiles.length} file(s) uploaded successfully`);
+
+      // AI auto-fill: analyze uploaded files for PRD-relevant content (only for document uploads)
+      if (type === 'files' && aiConfigured) {
+        try {
+          const result = await analyzeUploadedFiles(convertedFiles, formData);
+          if (result.success && result.data) {
+            const { fields, relevantCount } = result.data;
+            if (relevantCount > 0) {
+              // Store extracted fields and show preview dialog — don't auto-apply
+              setPendingFileFields(fields);
+              setShowFileAnalysisDialog(true);
+              showNotification(`AI found ${relevantCount} field${relevantCount > 1 ? 's' : ''} — review before applying`, 'info');
+            } else {
+              showNotification("Uploaded files don't contain info relevant to app fields", 'info');
+            }
+          }
+        } catch {
+          // AI analysis failed silently — files are still uploaded
+        }
+      }
     } catch (error) {
       showNotification('Error uploading files', 'error');
     }
@@ -271,7 +386,7 @@ export default function PRDGenerator() {
     }
   };
 
-  // AI Recommend APIs
+  // AI Recommend full tech stack
   const aiRecommendAPIs = async () => {
     if (!aiConfigured) {
       setShowSettingsDialog(true);
@@ -280,13 +395,22 @@ export default function PRDGenerator() {
 
     const result = await recommendAPIs(formData.appName, formData.appIdea, formData.platform, formData.selectedTechStack);
 
-    if (result.success) {
-      handleInputChange('selectedTechStack', {
-        ...formData.selectedTechStack,
-        apis: result.data.apis,
-        mcp: result.data.mcp
+    if (result.success && result.data) {
+      const updated = { ...formData.selectedTechStack };
+      const allFields = ['frontend', 'css', 'backend', 'llm', 'mcp', 'testing', 'deployment', 'reporting', 'apis', 'localLlm', 'evalTools', 'additional'];
+      let filledCount = 0;
+      allFields.forEach(field => {
+        const rec = result.data[field];
+        if (Array.isArray(rec) && rec.length > 0) {
+          // Merge with existing selections (no duplicates)
+          const existing = Array.isArray(updated[field]) ? updated[field] : [];
+          const merged = [...new Set([...existing, ...rec])];
+          updated[field] = merged;
+          filledCount++;
+        }
       });
-      showNotification('API recommendations applied');
+      handleInputChange('selectedTechStack', updated);
+      showNotification(`AI recommended technologies for ${filledCount} categories`);
     } else {
       showNotification(result.error || 'Failed to get recommendations', 'error');
     }
@@ -317,6 +441,36 @@ export default function PRDGenerator() {
     }
     setShowUndoDialog(false);
     setPendingChanges({});
+  };
+
+  // Accept file analysis fields
+  const acceptFileAnalysis = () => {
+    if (pendingFileFields) {
+      Object.entries(pendingFileFields).forEach(([key, value]) => {
+        handleInputChange(key, value);
+      });
+      const count = Object.keys(pendingFileFields).length;
+      showNotification(`${count} field${count > 1 ? 's' : ''} auto-filled from uploaded files`);
+    }
+    setShowFileAnalysisDialog(false);
+    setPendingFileFields(null);
+  };
+
+  const dismissFileAnalysis = () => {
+    setShowFileAnalysisDialog(false);
+    setPendingFileFields(null);
+    showNotification('File analysis dismissed — fields unchanged');
+  };
+
+  // Field label map for display
+  const fieldLabels = {
+    appName: 'App Name',
+    appIdea: 'App Idea',
+    problemStatement: 'Problem Statement',
+    goal: 'Goal',
+    outOfScope: 'Out of Scope',
+    platform: 'Platform',
+    prdPromptTemplate: 'PRD Prompt'
   };
 
   // Update competitor
@@ -451,14 +605,6 @@ export default function PRDGenerator() {
   };
 
   // Navigation
-  const saveAndContinue = () => {
-    forceSave();
-    if (currentStep < STEPS.length - 1) {
-      setCurrentStep(currentStep + 1);
-    }
-    showNotification('Progress saved!');
-  };
-
   const nextStep = () => {
     if (currentStep < STEPS.length - 1) {
       forceSave();
@@ -473,10 +619,10 @@ export default function PRDGenerator() {
   // Help Tooltip Component
   const HelpTooltip = ({ text }) => (
     <div className="group relative inline-block ml-2">
-      <HelpCircle size={16} className="text-gray-400 hover:text-orange-600 cursor-help transition-colors" />
-      <div className="invisible group-hover:visible absolute z-50 w-80 p-4 bg-gray-900 text-white text-xs rounded-lg shadow-2xl -top-2 left-6 leading-relaxed">
+      <Info size={16} className="text-gray-400 hover:text-blue-600 cursor-pointer transition-colors" />
+      <div className="invisible group-hover:visible absolute z-50 w-80 p-4 bg-gray-900 text-white text-xs rounded-lg shadow-2xl bottom-full mb-2 right-1/2 translate-x-1/2 leading-relaxed">
         {text}
-        <div className="absolute top-3 -left-1.5 w-3 h-3 bg-gray-900 transform rotate-45"></div>
+        <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3 h-3 bg-gray-900 transform rotate-45"></div>
       </div>
     </div>
   );
@@ -509,49 +655,50 @@ export default function PRDGenerator() {
 
   // Step 0: App Concept & Scope
   const renderStep0 = () => (
-    <div className="space-y-8">
+    <div className="space-y-8 bg-blue-50 p-6 rounded-2xl">
       {/* App Name + App Idea */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div>
-          <div className="flex items-center justify-between mb-3">
-            <label className="flex items-center text-base font-bold text-gray-800">
-              <span className="w-8 h-8 bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">1</span>
-              App Name
-              <HelpTooltip text={HELP_TEXTS.appName} />
-            </label>
-            <span className="text-sm text-gray-500">{formData.appName.length}/50</span>
-          </div>
+          <label className="flex items-center text-base font-bold text-gray-800 mb-3">
+            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">1a</span>
+            App Name
+            <HelpTooltip text={HELP_TEXTS.appName} />
+          </label>
           <input
             type="text"
             value={formData.appName}
-            onChange={(e) => e.target.value.length <= 50 && handleInputChange('appName', e.target.value)}
-            className="w-full px-4 py-3 bg-white border-2 border-gray-200 rounded-xl focus:border-orange-400 focus:ring-4 focus:ring-orange-100 outline-none transition-all"
+            onChange={(e) => handleInputChange('appName', e.target.value)}
+            className={`w-full px-4 py-3 bg-white border-2 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all ${formData.appName.length > 50 ? 'border-red-300 text-red-600' : 'border-gray-200'}`}
             placeholder="App name..."
           />
+          <div className="flex justify-end mt-1">
+            <span className={`text-sm font-medium ${formData.appName.length > 50 ? 'text-red-500' : 'text-gray-500'}`}>{formData.appName.length}/50</span>
+          </div>
         </div>
 
         <div>
-          <div className="flex items-center justify-between mb-3">
-            <label className="flex items-center text-base font-bold text-gray-800">
-              App Idea (Max 100 chars)
-              <HelpTooltip text={HELP_TEXTS.appIdea} />
-            </label>
-            <span className="text-sm text-gray-500">{formData.appIdea.length}/100</span>
-          </div>
+          <label className="flex items-center text-base font-bold text-gray-800 mb-3">
+            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">1b</span>
+            App Idea
+            <HelpTooltip text={HELP_TEXTS.appIdea} />
+          </label>
           <input
             type="text"
             value={formData.appIdea}
-            onChange={(e) => e.target.value.length <= 100 && handleInputChange('appIdea', e.target.value)}
-            className="w-full px-5 py-3 bg-white border-2 border-gray-200 rounded-xl focus:border-orange-400 focus:ring-4 focus:ring-orange-100 outline-none transition-all"
+            onChange={(e) => handleInputChange('appIdea', e.target.value)}
+            className={`w-full px-4 py-3 bg-white border-2 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all ${formData.appIdea.length > 100 ? 'border-red-300 text-red-600' : 'border-gray-200'}`}
             placeholder="Brief description..."
           />
+          <div className="flex justify-end mt-1">
+            <span className={`text-sm font-medium ${formData.appIdea.length > 100 ? 'text-red-500' : 'text-gray-500'}`}>{formData.appIdea.length}/100</span>
+          </div>
         </div>
       </div>
 
       {/* Document Upload */}
       <div>
         <label className="flex items-center text-base font-bold text-gray-800 mb-4">
-          <span className="w-8 h-8 bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">2</span>
+          <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">2</span>
           Upload Documents
           <HelpTooltip text={HELP_TEXTS.documents} />
         </label>
@@ -559,9 +706,9 @@ export default function PRDGenerator() {
         <div className="flex gap-3 mb-6">
           <button
             onClick={() => setShowPrepChecklist(!showPrepChecklist)}
-            className="px-4 py-2 bg-orange-100 text-orange-700 font-semibold rounded-lg hover:bg-orange-200 transition-all text-sm"
+            className="px-4 py-2 bg-blue-100 text-blue-700 font-semibold rounded-lg hover:bg-blue-200 transition-all text-sm"
           >
-            📋 Preparation Checklist
+            📋 BuLLMake Document Checklist
           </button>
           <button
             onClick={() => setShowMappedChecklist(!showMappedChecklist)}
@@ -572,81 +719,343 @@ export default function PRDGenerator() {
         </div>
 
         {showPrepChecklist && (
-          <div className="bg-orange-50 border-2 border-orange-200 rounded-xl p-5 mb-6">
-            <h4 className="font-bold text-orange-900 mb-3">Preparation Checklist</h4>
-            <p className="text-sm text-orange-700 mb-3">Documents to prepare before starting:</p>
-            <ul className="space-y-2 text-sm text-orange-800">
+          <div className="bg-blue-50 border-2 border-blue-200 rounded-xl p-4 mb-6">
+            <ul className="grid grid-cols-3 gap-x-4 gap-y-1.5 text-xs text-blue-800">
               {DOCUMENT_CHECKLIST.map(item => (
                 <li key={item.id} className="flex items-center">
-                  <Check size={16} className="mr-2 text-orange-600" />
+                  <Check size={12} className="mr-1.5 text-blue-600 flex-shrink-0" />
                   {item.label}
                 </li>
               ))}
             </ul>
-          </div>
-        )}
+            <div className="mt-3 pt-3 border-t border-blue-200">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <div
+                  onClick={() => setAllowClaudeCowork(!allowClaudeCowork)}
+                  className={`relative w-9 h-5 rounded-full transition-colors ${allowClaudeCowork ? 'bg-green-500' : 'bg-gray-300'}`}
+                >
+                  <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${allowClaudeCowork ? 'translate-x-4' : ''}`} />
+                </div>
+                <span className="text-xs font-medium text-blue-900">Allow Claude Cowork to fetch these documents</span>
+              </label>
 
-        {showMappedChecklist && (
-          <div className="bg-teal-50 border-2 border-teal-200 rounded-xl p-5 mb-6">
-            <h4 className="font-bold text-teal-900 mb-3">Upload Status</h4>
-            <div className="space-y-2 text-sm">
-              {DOCUMENT_CHECKLIST.map(item => {
-                const hasFile = formData.uploadedFiles.some(f =>
-                  f.name.toLowerCase().includes(item.id.replace('_', ' ')) ||
-                  f.name.toLowerCase().includes(item.label.toLowerCase().split(' ')[0])
-                );
-                return (
-                  <div key={item.id} className="flex items-center justify-between p-2 bg-white rounded-lg">
-                    <span className="text-gray-700">{item.label}</span>
-                    {hasFile ? (
-                      <span className="text-green-600 flex items-center">
-                        <CheckCircle2 size={16} className="mr-1" /> Uploaded
-                      </span>
-                    ) : (
-                      <span className="text-gray-400">Pending</span>
-                    )}
+              {allowClaudeCowork && (
+                <div className="mt-3 space-y-3">
+                  <div className="flex items-stretch gap-2">
+                    <div className="relative flex-1">
+                      <FolderSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-blue-400" size={16} />
+                      <input
+                        type="text"
+                        value={coworkFolderPath}
+                        onChange={(e) => setCoworkFolderPath(e.target.value)}
+                        className="w-full h-full pl-9 pr-3 py-2 border-2 border-blue-200 rounded-lg text-xs bg-white focus:border-blue-400 outline-none"
+                        placeholder="Local folder path (e.g., D:/Projects/MyApp)"
+                      />
+                    </div>
                   </div>
-                );
-              })}
+
+                  <div className="flex flex-wrap gap-3 text-xs">
+                    {[
+                      { key: 'localFolder', label: 'Local folder' },
+                      { key: 'uploadedFiles', label: 'Uploaded files' },
+                      { key: 'googleDrive', label: 'Google Drive' },
+                      { key: 'oneDrive', label: 'OneDrive' }
+                    ].map(src => (
+                      <label key={src.key} className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={coworkSources[src.key]}
+                          onChange={(e) => setCoworkSources(prev => ({ ...prev, [src.key]: e.target.checked }))}
+                          className="w-3.5 h-3.5 rounded border-blue-300 text-blue-600 focus:ring-blue-400"
+                        />
+                        <span className="text-blue-800">{src.label}</span>
+                      </label>
+                    ))}
+                  </div>
+
+                  <button
+                    disabled={coworkRunning || !aiConfigured}
+                    onClick={async () => {
+                      const hasAnySource = (coworkSources.localFolder && coworkFolderPath.trim()) ||
+                        (coworkSources.uploadedFiles && formData.uploadedFiles.length > 0) ||
+                        (coworkSources.googleDrive && formData.googleDriveLink.trim()) ||
+                        (coworkSources.oneDrive && formData.oneDriveLink.trim());
+
+                      if (!hasAnySource) {
+                        showNotification('Add at least one source — folder path, uploaded files, or a drive link', 'error');
+                        return;
+                      }
+
+                      setCoworkRunning(true);
+                      setCoworkResult(null);
+                      try {
+                        const result = await coworkFetch({
+                          folderPath: coworkSources.localFolder ? coworkFolderPath : '',
+                          uploadedFiles: coworkSources.uploadedFiles ? formData.uploadedFiles : [],
+                          googleDriveLink: coworkSources.googleDrive ? formData.googleDriveLink : '',
+                          oneDriveLink: coworkSources.oneDrive ? formData.oneDriveLink : '',
+                          currentFormData: formData,
+                          sources: coworkSources
+                        });
+
+                        if (result.success && result.data) {
+                          setCoworkResult(result.data);
+                          if (result.data.warning) {
+                            showNotification(result.data.warning, 'error');
+                          } else if (result.data.relevantCount > 0) {
+                            setPendingFileFields(result.data.fields);
+                            setShowFileAnalysisDialog(true);
+                            showNotification(`Cowork scanned ${result.data.scannedCount} files — ${result.data.relevantCount} field${result.data.relevantCount > 1 ? 's' : ''} found`, 'info');
+                          } else {
+                            showNotification(`Scanned ${result.data.scannedCount} files — no relevant PRD info found`, 'info');
+                          }
+                        } else {
+                          showNotification(result.error || 'Cowork analysis failed', 'error');
+                        }
+                      } catch {
+                        showNotification('Cowork analysis failed', 'error');
+                      }
+                      setCoworkRunning(false);
+                    }}
+                    className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold transition-all ${
+                      coworkRunning
+                        ? 'bg-blue-100 text-blue-500 cursor-wait'
+                        : 'bg-gradient-to-r from-blue-600 to-cyan-600 text-white hover:shadow-lg'
+                    }`}
+                  >
+                    {coworkRunning ? (
+                      <>
+                        <Loader2 size={16} className="animate-spin" />
+                        Claude is analyzing documents...
+                      </>
+                    ) : (
+                      <>
+                        <Play size={16} />
+                        Start Cowork
+                      </>
+                    )}
+                  </button>
+
+                  <p className="text-[10px] text-blue-500 leading-tight">
+                    Scans .txt .md .csv .json .pdf .docx files up to 3 folder levels deep. Max 2MB per file. Sensitive files skipped.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         )}
 
+        {showMappedChecklist && (() => {
+          const categoryKeywords = {
+            app_idea: ['idea', 'concept', 'vision', 'pitch', 'overview', 'brief', 'proposal', 'summary', 'about'],
+            design_doc: ['design', 'sdd', 'srs', 'brd', 'frd', 'functional', 'software design', 'spec', 'requirement'],
+            notebooklm: ['notebooklm', 'notebook', 'nlm'],
+            storm_pdf: ['storm', 'storm pdf'],
+            client_expectations: ['client', 'expectation', 'stakeholder', 'scope'],
+            process_flow: ['flow', 'process', 'journey', 'workflow', 'diagram', 'wireframe', 'sitemap', 'navigation', 'ux', 'ui'],
+            data_schema: ['schema', 'data', 'database', 'erd', 'model', 'entity', 'table', 'sql', 'migration'],
+            video_walkthrough: ['video', 'walkthrough', 'demo', 'recording', 'screencast', 'mp4', 'mov', 'webm'],
+            screenshots: ['screenshot', 'screen', 'capture', 'snapshot', 'existing tool', 'png', 'jpg', 'jpeg'],
+            legacy_code: ['legacy', 'code', 'source', 'codebase', 'repo'],
+            competitive_tools: ['competitor', 'competition', 'competitive', 'market', 'benchmark', 'comparison', 'landscape'],
+            integrations_3p: ['3rd party', 'third party', 'external', 'plugin', 'addon'],
+            apis: ['api', 'endpoint', 'rest', 'graphql', 'swagger', 'openapi'],
+            mcps: ['mcp', 'model context'],
+            integrations: ['integration', 'connect', 'sync', 'webhook', 'oauth']
+          };
+
+          const fileMatches = {};
+          const matchedFileIds = new Set();
+
+          DOCUMENT_CHECKLIST.forEach(item => {
+            const keywords = categoryKeywords[item.id] || [];
+            fileMatches[item.id] = formData.uploadedFiles.filter(f => {
+              const name = f.name.toLowerCase().replace(/[_\-./\\]/g, ' ');
+              return keywords.some(kw => name.includes(kw));
+            });
+            fileMatches[item.id].forEach(f => matchedFileIds.add(f.id));
+          });
+
+          const unmatchedFiles = formData.uploadedFiles.filter(f => !matchedFileIds.has(f.id));
+
+          return (
+            <div className="bg-teal-50 border-2 border-teal-200 rounded-xl p-5 mb-6">
+              <h4 className="font-bold text-teal-900 mb-3">Upload Status</h4>
+              <div className="space-y-2 text-sm">
+                {DOCUMENT_CHECKLIST.map(item => {
+                  const matched = fileMatches[item.id];
+                  return (
+                    <div key={item.id} className="p-2 bg-white rounded-lg">
+                      <div className="flex items-center justify-between">
+                        <span className="text-gray-700">{item.label}</span>
+                        {matched.length > 0 ? (
+                          <span className="text-green-600 flex items-center">
+                            <CheckCircle2 size={16} className="mr-1" /> {matched.length} file{matched.length > 1 ? 's' : ''}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">Pending</span>
+                        )}
+                      </div>
+                      {matched.length > 0 && (
+                        <div className="mt-1 pl-1 flex flex-wrap gap-1">
+                          {matched.map(f => (
+                            <span key={f.id} className="inline-flex items-center px-2 py-0.5 bg-green-50 text-green-700 rounded text-xs">
+                              {getFileIcon(f.type)} {f.name}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {unmatchedFiles.length > 0 && (
+                  <div className="p-2 bg-white rounded-lg">
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-500 italic">Other uploads</span>
+                      <span className="text-blue-500 text-xs">{unmatchedFiles.length} file{unmatchedFiles.length > 1 ? 's' : ''}</span>
+                    </div>
+                    <div className="mt-1 pl-1 flex flex-wrap gap-1">
+                      {unmatchedFiles.map(f => (
+                        <span key={f.id} className="inline-flex items-center px-2 py-0.5 bg-gray-50 text-gray-600 rounded text-xs">
+                          {getFileIcon(f.type)} {f.name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
         <div className="grid grid-cols-2 gap-4 mb-6">
-          <label className="cursor-pointer flex flex-col items-center justify-center px-6 py-8 bg-white border-2 border-dashed border-gray-300 rounded-xl hover:border-orange-400 hover:bg-orange-50 transition-all">
-            <Upload size={32} className="text-gray-400 mb-2" />
-            <span className="font-medium text-gray-700 text-sm">Upload Multiple Files</span>
+          <label className="cursor-pointer flex flex-col items-center justify-center px-6 py-8 bg-white border-2 border-dashed border-gray-300 rounded-xl hover:border-blue-400 hover:bg-blue-50 transition-all">
+            <FolderArchive size={32} className="text-gray-400 mb-2" />
+            <span className="font-medium text-gray-700 text-sm">Drop files/ZIP or click to browse local folder</span>
+            <small className="text-gray-400 text-xs mt-1 text-center">Files are validated internally. ZIP archives are extracted securely. Executable files are blocked.</small>
             <input type="file" onChange={(e) => handleFileUpload(e)} className="hidden" multiple />
           </label>
 
           <div className="flex flex-col gap-3">
-            <div className="relative flex-1">
-              <Link className="absolute left-3 top-3 text-gray-400" size={18} />
-              <input
-                type="text"
-                value={formData.googleDriveLink}
-                onChange={(e) => handleInputChange('googleDriveLink', e.target.value)}
-                className="w-full pl-10 pr-4 py-3 border-2 border-gray-200 rounded-xl text-sm"
-                placeholder="Google Drive link"
-              />
+            <div className="flex items-stretch gap-2 flex-1">
+              <div className="relative flex-1">
+                <Link className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                <input
+                  type="text"
+                  value={formData.googleDriveLink}
+                  onChange={(e) => {
+                    handleInputChange('googleDriveLink', e.target.value);
+                    if (driveSynced.google) setDriveSynced(prev => ({ ...prev, google: false }));
+                  }}
+                  className={`w-full h-full pl-10 pr-4 py-3 border-2 rounded-xl text-sm ${driveSynced.google ? 'border-green-400 bg-green-50' : 'border-gray-200'}`}
+                  placeholder="Google Drive link"
+                />
+              </div>
+              <button
+                disabled={driveSyncing.google}
+                onClick={async () => {
+                  if (!formData.googleDriveLink.trim()) {
+                    showNotification('Enter a Google Drive link first', 'error');
+                    return;
+                  }
+                  setDriveSyncing(prev => ({ ...prev, google: true }));
+                  try {
+                    const result = await analyzeDriveLink(formData.googleDriveLink, 'Google Drive', formData);
+                    if (result.success && result.data) {
+                      if (result.data.warning) {
+                        showNotification(result.data.warning, 'error');
+                      } else if (result.data.relevantCount > 0) {
+                        setDriveSynced(prev => ({ ...prev, google: true }));
+                        setPendingFileFields(result.data.fields);
+                        setShowFileAnalysisDialog(true);
+                        showNotification(`Google Drive synced — ${result.data.relevantCount} field${result.data.relevantCount > 1 ? 's' : ''} found`, 'info');
+                      } else {
+                        setDriveSynced(prev => ({ ...prev, google: true }));
+                        showNotification('Google Drive synced — no relevant PRD info found in document', 'info');
+                      }
+                    } else {
+                      showNotification(result.error || 'Failed to analyze Google Drive link', 'error');
+                    }
+                  } catch {
+                    showNotification('Failed to sync Google Drive link', 'error');
+                  }
+                  setDriveSyncing(prev => ({ ...prev, google: false }));
+                }}
+                className={`px-4 rounded-xl text-sm font-semibold flex items-center gap-1.5 transition-all whitespace-nowrap ${
+                  driveSyncing.google
+                    ? 'bg-blue-100 text-blue-500 border-2 border-blue-200 cursor-wait'
+                    : driveSynced.google
+                      ? 'bg-green-500 text-white'
+                      : 'bg-gray-100 text-gray-600 hover:bg-blue-50 hover:text-blue-600 border-2 border-gray-200'
+                }`}
+              >
+                {driveSyncing.google ? <Loader2 size={16} className="animate-spin" /> : driveSynced.google ? <Check size={16} /> : <RefreshCw size={16} />}
+                {driveSyncing.google ? 'Syncing' : driveSynced.google ? 'Synced' : 'Sync'}
+              </button>
             </div>
 
-            <div className="relative flex-1">
-              <Link className="absolute left-3 top-3 text-gray-400" size={18} />
-              <input
-                type="text"
-                value={formData.oneDriveLink}
-                onChange={(e) => handleInputChange('oneDriveLink', e.target.value)}
-                className="w-full pl-10 pr-4 py-3 border-2 border-gray-200 rounded-xl text-sm"
-                placeholder="OneDrive link"
-              />
+            <div className="flex items-stretch gap-2 flex-1">
+              <div className="relative flex-1">
+                <Link className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                <input
+                  type="text"
+                  value={formData.oneDriveLink}
+                  onChange={(e) => {
+                    handleInputChange('oneDriveLink', e.target.value);
+                    if (driveSynced.onedrive) setDriveSynced(prev => ({ ...prev, onedrive: false }));
+                  }}
+                  className={`w-full h-full pl-10 pr-4 py-3 border-2 rounded-xl text-sm ${driveSynced.onedrive ? 'border-green-400 bg-green-50' : 'border-gray-200'}`}
+                  placeholder="OneDrive link"
+                />
+              </div>
+              <button
+                disabled={driveSyncing.onedrive}
+                onClick={async () => {
+                  if (!formData.oneDriveLink.trim()) {
+                    showNotification('Enter a OneDrive link first', 'error');
+                    return;
+                  }
+                  setDriveSyncing(prev => ({ ...prev, onedrive: true }));
+                  try {
+                    const result = await analyzeDriveLink(formData.oneDriveLink, 'OneDrive', formData);
+                    if (result.success && result.data) {
+                      if (result.data.warning) {
+                        showNotification(result.data.warning, 'error');
+                      } else if (result.data.relevantCount > 0) {
+                        setDriveSynced(prev => ({ ...prev, onedrive: true }));
+                        setPendingFileFields(result.data.fields);
+                        setShowFileAnalysisDialog(true);
+                        showNotification(`OneDrive synced — ${result.data.relevantCount} field${result.data.relevantCount > 1 ? 's' : ''} found`, 'info');
+                      } else {
+                        setDriveSynced(prev => ({ ...prev, onedrive: true }));
+                        showNotification('OneDrive synced — no relevant PRD info found in document', 'info');
+                      }
+                    } else {
+                      showNotification(result.error || 'Failed to analyze OneDrive link', 'error');
+                    }
+                  } catch {
+                    showNotification('Failed to sync OneDrive link', 'error');
+                  }
+                  setDriveSyncing(prev => ({ ...prev, onedrive: false }));
+                }}
+                className={`px-4 rounded-xl text-sm font-semibold flex items-center gap-1.5 transition-all whitespace-nowrap ${
+                  driveSyncing.onedrive
+                    ? 'bg-blue-100 text-blue-500 border-2 border-blue-200 cursor-wait'
+                    : driveSynced.onedrive
+                      ? 'bg-green-500 text-white'
+                      : 'bg-gray-100 text-gray-600 hover:bg-blue-50 hover:text-blue-600 border-2 border-gray-200'
+                }`}
+              >
+                {driveSyncing.onedrive ? <Loader2 size={16} className="animate-spin" /> : driveSynced.onedrive ? <Check size={16} /> : <RefreshCw size={16} />}
+                {driveSyncing.onedrive ? 'Syncing' : driveSynced.onedrive ? 'Synced' : 'Sync'}
+              </button>
             </div>
           </div>
         </div>
 
         {formData.uploadedFiles.length > 0 && (
-          <div className="bg-orange-50 rounded-xl border-2 border-orange-200 p-4">
-            <h4 className="font-semibold text-orange-900 mb-3">
+          <div className="bg-blue-50 rounded-xl border-2 border-blue-200 p-4">
+            <h4 className="font-semibold text-blue-900 mb-3">
               Uploaded: {formData.uploadedFiles.length} files
             </h4>
             <div className="grid grid-cols-3 gap-2 max-h-40 overflow-y-auto">
@@ -674,23 +1083,14 @@ export default function PRDGenerator() {
         )}
       </div>
 
-      {/* PRD Prompt Template Section */}
-      <div className="bg-gradient-to-br from-orange-50 to-amber-50 p-6 rounded-xl border-2 border-orange-200">
+      {/* BuLLM PRD Template Section */}
+      <div className="bg-gradient-to-br from-blue-50 to-cyan-50 p-6 rounded-xl border-2 border-blue-200">
         <div className="flex items-center justify-between mb-3">
-          <label className="flex items-center text-base font-bold text-orange-900">
-            <FileText size={18} className="mr-2" />
-            PRD Prompt Template (Max 1150 chars)
+          <label className="flex items-center text-base font-bold text-blue-900">
+            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">3</span>
+            BuLLM PRD Template
             <HelpTooltip text="Create your PRD prompt using the ISTVON framework for comprehensive documentation." />
           </label>
-          <span className="text-sm text-orange-700 font-medium">{(formData.prdPromptTemplate || DEFAULT_PRD_PROMPT).length}/1150</span>
-        </div>
-        <textarea
-          value={formData.prdPromptTemplate || DEFAULT_PRD_PROMPT}
-          onChange={(e) => e.target.value.length <= 1150 && handleInputChange('prdPromptTemplate', e.target.value)}
-          className="w-full px-5 py-4 bg-white border-2 border-orange-200 rounded-xl focus:border-orange-400 focus:ring-4 focus:ring-orange-100 outline-none transition-all resize-none"
-          rows="5"
-        />
-        <div className="flex gap-3 mt-4">
           <button
             onClick={async () => {
               if (!formData.appName && !formData.appIdea) {
@@ -707,25 +1107,29 @@ export default function PRDGenerator() {
               }
             }}
             disabled={aiEnhancing}
-            className="flex items-center px-5 py-2.5 bg-gradient-to-r from-orange-500 to-amber-500 text-white font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
+            className="flex items-center px-5 py-2.5 bg-gradient-to-r from-blue-500 to-cyan-500 text-white font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
           >
             {aiEnhancing ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Wand2 size={16} className="mr-2" />}
             AI Enhance
           </button>
-          <button
-            onClick={() => setShowIstvonTemplate(!showIstvonTemplate)}
-            className="flex items-center px-5 py-2.5 bg-white text-orange-700 font-semibold rounded-lg hover:bg-orange-100 transition-all border-2 border-orange-300"
-          >
-            <Sparkles size={16} className="mr-2" />
-            {showIstvonTemplate ? 'Hide ISTVON Template' : 'Use ISTVON Template'}
-          </button>
-          <button
-            onClick={() => setShowDetailedReport(!showDetailedReport)}
-            className="flex items-center px-5 py-2.5 bg-white text-blue-700 font-semibold rounded-lg hover:bg-blue-100 transition-all border-2 border-blue-300"
-          >
-            <FileCheck size={16} className="mr-2" />
-            {showDetailedReport ? 'Hide Detailed Report' : 'Detailed Report'}
-          </button>
+        </div>
+        <textarea
+          value={formData.prdPromptTemplate || DEFAULT_PRD_PROMPT}
+          onChange={(e) => handleInputChange('prdPromptTemplate', e.target.value)}
+          className={`w-full px-5 py-4 bg-white border-2 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all resize-none ${(formData.prdPromptTemplate || DEFAULT_PRD_PROMPT).length > 1150 ? 'border-red-300 text-red-600' : 'border-blue-200'}`}
+          rows="5"
+        />
+        <div className="flex justify-between items-center mt-4">
+          <div className="flex gap-3">
+            <button
+              onClick={() => setShowDetailedReport(!showDetailedReport)}
+              className="flex items-center px-5 py-2.5 bg-white text-blue-700 font-semibold rounded-lg hover:bg-blue-100 transition-all border-2 border-blue-300"
+            >
+              <FileCheck size={16} className="mr-2" />
+              {showDetailedReport ? 'Hide Scope of Work' : 'Scope of Work'}
+            </button>
+          </div>
+          <span className={`text-sm font-medium ${(formData.prdPromptTemplate || DEFAULT_PRD_PROMPT).length > 1150 ? 'text-red-500' : 'text-blue-700'}`}>{(formData.prdPromptTemplate || DEFAULT_PRD_PROMPT).length}/1150</span>
         </div>
       </div>
 
@@ -746,7 +1150,7 @@ export default function PRDGenerator() {
                 handleInputChange('prdPromptTemplate', fullPrompt.substring(0, 1150));
                 showNotification('ISTVON template applied');
               }}
-              className="px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all"
+              className="px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all"
             >
               Apply to Template
             </button>
@@ -767,7 +1171,7 @@ export default function PRDGenerator() {
                       type="text"
                       value={formData.istvonData[field.key] || ''}
                       onChange={(e) => handleNestedChange('istvonData', field.key, e.target.value)}
-                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:border-orange-400 focus:ring-2 focus:ring-orange-100 outline-none"
+                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:border-blue-400 focus:ring-2 focus:ring-blue-100 outline-none"
                       placeholder={field.placeholder}
                     />
                   </div>
@@ -807,33 +1211,23 @@ export default function PRDGenerator() {
       <div>
         <div className="flex items-center justify-between mb-3">
           <label className="flex items-center text-base font-bold text-gray-800">
-            <span className="w-8 h-8 bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">2</span>
+            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">4a</span>
             Problem Statement
             <HelpTooltip text={HELP_TEXTS.problemStatement} />
           </label>
-          <div className="flex gap-2">
-            <button
-              onClick={() => aiEnhanceField('problemStatement')}
-              disabled={aiEnhancing}
-              className="flex items-center px-4 py-2 bg-orange-100 text-orange-700 text-sm font-semibold rounded-lg hover:bg-orange-200 transition-all disabled:opacity-50"
-            >
-              {aiEnhancing ? <Loader2 size={14} className="mr-2 animate-spin" /> : <Wand2 size={14} className="mr-2" />}
-              AI Enhance
-            </button>
-            <button
-              onClick={() => aiEnhanceField('problemStatement')}
-              disabled={aiEnhancing}
-              className="flex items-center px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
-            >
-              {aiEnhancing ? <Loader2 size={14} className="mr-2 animate-spin" /> : <Sparkles size={14} className="mr-2" />}
-              AI Suggest
-            </button>
-          </div>
+          <button
+            onClick={() => aiEnhanceField('problemStatement')}
+            disabled={aiEnhancing}
+            className="flex items-center px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
+          >
+            {aiEnhancing ? <Loader2 size={14} className="mr-2 animate-spin" /> : <Sparkles size={14} className="mr-2" />}
+            AI Enhance
+          </button>
         </div>
         <textarea
           value={formData.problemStatement}
           onChange={(e) => handleInputChange('problemStatement', e.target.value)}
-          className="w-full px-5 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-orange-400 focus:ring-4 focus:ring-orange-100 outline-none transition-all resize-none"
+          className="w-full px-5 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all resize-none"
           rows="5"
           placeholder="Describe the problems your app will solve..."
         />
@@ -843,23 +1237,23 @@ export default function PRDGenerator() {
       <div>
         <div className="flex items-center justify-between mb-3">
           <label className="flex items-center text-base font-bold text-gray-800">
-            <span className="w-8 h-8 bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">3</span>
+            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">4b</span>
             Main Goal
             <HelpTooltip text={HELP_TEXTS.goal} />
           </label>
           <button
             onClick={() => aiEnhanceField('goal')}
             disabled={aiEnhancing}
-            className="flex items-center px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
+            className="flex items-center px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
           >
             {aiEnhancing ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Wand2 size={16} className="mr-2" />}
-            AI Suggest
+            AI Enhance
           </button>
         </div>
         <textarea
           value={formData.goal}
           onChange={(e) => handleInputChange('goal', e.target.value)}
-          className="w-full px-5 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-orange-400 focus:ring-4 focus:ring-orange-100 outline-none transition-all resize-none"
+          className="w-full px-5 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all resize-none"
           rows="3"
           placeholder="Define the primary objective..."
         />
@@ -869,15 +1263,15 @@ export default function PRDGenerator() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div ref={demographyRef}>
           <label className="flex items-center text-base font-bold text-gray-800 mb-3">
-            <span className="w-8 h-8 bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">4</span>
+            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">5a</span>
             Target Demography (Max 3)
             <HelpTooltip text={HELP_TEXTS.demography} />
           </label>
           <div className="flex flex-wrap gap-2 mb-3">
             {formData.targetAudienceDemography.map(demo => (
-              <span key={demo} className="inline-flex items-center px-3 py-1 bg-orange-500 text-white rounded-full text-sm">
+              <span key={demo} className="inline-flex items-center px-3 py-1 bg-blue-500 text-white rounded-full text-sm">
                 {demo}
-                <button onClick={() => removeDemography(demo)} className="ml-2 hover:text-orange-200">
+                <button onClick={() => removeDemography(demo)} className="ml-2 hover:text-blue-200">
                   <X size={14} />
                 </button>
               </span>
@@ -891,7 +1285,7 @@ export default function PRDGenerator() {
                 value={demographySearch}
                 onChange={(e) => setDemographySearch(e.target.value)}
                 onFocus={() => setShowDemographyDropdown(true)}
-                className="w-full pl-10 pr-4 py-3 border-2 border-gray-200 rounded-lg focus:border-orange-400 outline-none"
+                className="w-full pl-10 pr-4 py-3 border-2 border-gray-200 rounded-lg focus:border-blue-400 outline-none"
                 placeholder="Search..."
               />
               {showDemographyDropdown && filteredDemography.length > 0 && (
@@ -900,7 +1294,7 @@ export default function PRDGenerator() {
                     <button
                       key={opt}
                       onClick={() => addDemography(opt)}
-                      className="w-full px-4 py-2 text-left hover:bg-orange-50 text-sm"
+                      className="w-full px-4 py-2 text-left hover:bg-blue-50 text-sm"
                     >
                       {opt}
                     </button>
@@ -913,15 +1307,15 @@ export default function PRDGenerator() {
 
         <div ref={geographyRef}>
           <label className="flex items-center text-base font-bold text-gray-800 mb-3">
-            <span className="w-8 h-8 bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">5</span>
+            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">5b</span>
             Target Geography (Max 3)
             <HelpTooltip text={HELP_TEXTS.geography} />
           </label>
           <div className="flex flex-wrap gap-2 mb-3">
             {formData.targetAudienceGeography.map(geo => (
-              <span key={geo} className="inline-flex items-center px-3 py-1 bg-orange-500 text-white rounded-full text-sm">
+              <span key={geo} className="inline-flex items-center px-3 py-1 bg-blue-500 text-white rounded-full text-sm">
                 {geo}
-                <button onClick={() => removeGeography(geo)} className="ml-2 hover:text-orange-200">
+                <button onClick={() => removeGeography(geo)} className="ml-2 hover:text-blue-200">
                   <X size={14} />
                 </button>
               </span>
@@ -935,7 +1329,7 @@ export default function PRDGenerator() {
                 value={geographySearch}
                 onChange={(e) => setGeographySearch(e.target.value)}
                 onFocus={() => setShowGeographyDropdown(true)}
-                className="w-full pl-10 pr-4 py-3 border-2 border-gray-200 rounded-lg focus:border-orange-400 outline-none"
+                className="w-full pl-10 pr-4 py-3 border-2 border-gray-200 rounded-lg focus:border-blue-400 outline-none"
                 placeholder="Search..."
               />
               {showGeographyDropdown && filteredGeography.length > 0 && (
@@ -944,7 +1338,7 @@ export default function PRDGenerator() {
                     <button
                       key={opt}
                       onClick={() => addGeography(opt)}
-                      className="w-full px-4 py-2 text-left hover:bg-orange-50 text-sm"
+                      className="w-full px-4 py-2 text-left hover:bg-blue-50 text-sm"
                     >
                       {opt}
                     </button>
@@ -960,23 +1354,23 @@ export default function PRDGenerator() {
       <div>
         <div className="flex items-center justify-between mb-3">
           <label className="flex items-center text-base font-bold text-gray-800">
-            <span className="w-8 h-8 bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">6</span>
-            Out of Scope (v1.0)
+            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">6</span>
+            Out of Scope
             <HelpTooltip text={HELP_TEXTS.outOfScope} />
           </label>
           <button
             onClick={() => aiEnhanceField('outOfScope')}
             disabled={aiEnhancing}
-            className="flex items-center px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
+            className="flex items-center px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
           >
             {aiEnhancing ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Wand2 size={16} className="mr-2" />}
-            AI Suggest
+            AI Enhance
           </button>
         </div>
         <textarea
           value={formData.outOfScope}
           onChange={(e) => handleInputChange('outOfScope', e.target.value)}
-          className="w-full px-5 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-orange-400 focus:ring-4 focus:ring-orange-100 outline-none transition-all resize-none"
+          className="w-full px-5 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all resize-none"
           rows="4"
           placeholder="Features excluded from v1.0..."
         />
@@ -985,7 +1379,7 @@ export default function PRDGenerator() {
       {/* Timeline & Project Details */}
       <div>
         <label className="flex items-center text-base font-bold text-gray-800 mb-4">
-          <span className="w-8 h-8 bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">7</span>
+          <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">7</span>
           Timeline & Project Details
           <HelpTooltip text={HELP_TEXTS.timeline} />
         </label>
@@ -996,7 +1390,7 @@ export default function PRDGenerator() {
             <select
               value={formData.projectType}
               onChange={(e) => handleInputChange('projectType', e.target.value)}
-              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg outline-none focus:border-orange-400"
+              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg outline-none focus:border-blue-400"
             >
               <option value="">Select</option>
               <option value="internal">Internal</option>
@@ -1010,13 +1404,13 @@ export default function PRDGenerator() {
               type="date"
               value={formData.dueDate}
               onChange={(e) => handleInputChange('dueDate', e.target.value)}
-              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg outline-none focus:border-orange-400"
+              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg outline-none focus:border-blue-400"
             />
           </div>
           <div className="flex items-end">
             <button
               onClick={addMilestone}
-              className="w-full px-4 py-3 bg-orange-500 text-white font-semibold rounded-lg hover:bg-orange-600"
+              className="w-full px-4 py-3 bg-blue-500 text-white font-semibold rounded-lg hover:bg-blue-600"
             >
               Add Milestone
             </button>
@@ -1027,25 +1421,25 @@ export default function PRDGenerator() {
           <div className="space-y-3">
             <h4 className="font-semibold text-gray-700">Milestones</h4>
             {formData.milestones.map((milestone) => (
-              <div key={milestone.id} className="flex gap-3 p-3 bg-orange-50 rounded-lg">
+              <div key={milestone.id} className="flex gap-3 p-3 bg-blue-50 rounded-lg">
                 <input
                   type="text"
                   value={milestone.name}
                   onChange={(e) => updateMilestone(milestone.id, 'name', e.target.value)}
-                  className="flex-1 px-3 py-2 border border-orange-200 rounded"
+                  className="flex-1 px-3 py-2 border border-blue-200 rounded"
                   placeholder="Name"
                 />
                 <input
                   type="date"
                   value={milestone.date}
                   onChange={(e) => updateMilestone(milestone.id, 'date', e.target.value)}
-                  className="px-3 py-2 border border-orange-200 rounded"
+                  className="px-3 py-2 border border-blue-200 rounded"
                 />
                 <input
                   type="text"
                   value={milestone.description}
                   onChange={(e) => updateMilestone(milestone.id, 'description', e.target.value)}
-                  className="flex-1 px-3 py-2 border border-orange-200 rounded"
+                  className="flex-1 px-3 py-2 border border-blue-200 rounded"
                   placeholder="Description"
                 />
                 <button
@@ -1064,7 +1458,7 @@ export default function PRDGenerator() {
 
   // Step 1: Platform & Tech Stack
   const renderStep1 = () => (
-    <div className="space-y-8">
+    <div className="space-y-8 bg-blue-50 p-6 rounded-2xl">
       {/* Platform Type - 2x4 Grid */}
       <div>
         <label className="flex items-center text-lg font-bold text-gray-800 mb-4">
@@ -1072,23 +1466,47 @@ export default function PRDGenerator() {
           Select Platform Type
           <HelpTooltip text={HELP_TEXTS.platform} />
         </label>
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-4 gap-2">
           {PLATFORM_OPTIONS.map((option) => (
             <button
               key={option.name}
               onClick={() => handleInputChange('platform', option.name)}
-              className={`px-4 py-4 rounded-xl border-2 font-bold text-sm transition-all ${formData.platform === option.name
-                  ? 'border-blue-500 bg-gradient-to-br from-blue-50 to-cyan-50 shadow-lg scale-105'
+              className={`px-3 py-2 rounded-lg border-2 font-bold text-xs transition-all ${formData.platform === option.name
+                  ? 'border-blue-500 bg-gradient-to-br from-blue-50 to-cyan-50 shadow-md scale-105'
                   : 'border-gray-200 bg-white hover:border-blue-300'
                 }`}
             >
-              <div className="text-3xl mb-1">{option.emoji}</div>
-              <div className={formData.platform === option.name ? 'text-blue-700' : 'text-gray-700'}>
+              <div className="text-lg leading-none mb-0.5">{option.emoji}</div>
+              <div className={`leading-tight ${formData.platform === option.name ? 'text-blue-700' : 'text-gray-700'}`}>
                 {option.name}
               </div>
-              <div className="text-xs text-gray-500 mt-1">{option.sub}</div>
+              <div className="text-[10px] text-gray-400 leading-tight">{option.sub}</div>
             </button>
           ))}
+        </div>
+        <div className="grid grid-cols-2 gap-4 mt-4">
+          <div>
+            <label className="text-sm font-semibold text-gray-700 mb-1 block">Number of Users</label>
+            <input
+              type="number"
+              min="0"
+              value={formData.numberOfUsers}
+              onChange={(e) => handleInputChange('numberOfUsers', e.target.value)}
+              className="w-full px-4 py-2.5 bg-white border-2 border-gray-200 rounded-lg focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all text-sm"
+              placeholder="e.g., 500"
+            />
+          </div>
+          <div>
+            <label className="text-sm font-semibold text-gray-700 mb-1 block">Number of Admins</label>
+            <input
+              type="number"
+              min="0"
+              value={formData.numberOfAdmins}
+              onChange={(e) => handleInputChange('numberOfAdmins', e.target.value)}
+              className="w-full px-4 py-2.5 bg-white border-2 border-gray-200 rounded-lg focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all text-sm"
+              placeholder="e.g., 5"
+            />
+          </div>
         </div>
       </div>
 
@@ -1162,82 +1580,41 @@ export default function PRDGenerator() {
           </div>
         </div>
 
-        <div className="space-y-4">
-          <div className="grid grid-cols-3 gap-4">
-            {[
+        <div className="space-y-3">
+          {[
+            [
               { key: 'frontend', label: 'Frontend' },
               { key: 'css', label: 'CSS Framework' },
               { key: 'backend', label: 'Backend' }
-            ].map(({ key, label }) => (
-              <div key={key} className="bg-white rounded-xl border-2 border-gray-200 p-4">
-                <h4 className="font-bold text-gray-800 mb-2 text-sm">{label}</h4>
-                <input
-                  type="text"
-                  value={formData.selectedTechStack[key]}
-                  onChange={(e) => handleNestedChange('selectedTechStack', key, e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
-                  placeholder={`e.g., ${key === 'frontend' ? 'React' : key === 'css' ? 'Tailwind' : 'Supabase'}`}
-                />
-              </div>
-            ))}
-          </div>
-
-          <div className="grid grid-cols-3 gap-4">
-            {[
+            ],
+            [
               { key: 'llm', label: 'LLM Engine' },
               { key: 'mcp', label: 'MCP Integrations' },
               { key: 'testing', label: 'Testing' }
-            ].map(({ key, label }) => (
-              <div key={key} className="bg-white rounded-xl border-2 border-gray-200 p-4">
-                <h4 className="font-bold text-gray-800 mb-2 text-sm">{label}</h4>
-                <input
-                  type="text"
-                  value={formData.selectedTechStack[key]}
-                  onChange={(e) => handleNestedChange('selectedTechStack', key, e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
-                  placeholder={`e.g., ${key === 'llm' ? 'Claude Opus' : key === 'mcp' ? 'Claude MCP' : 'Playwright'}`}
-                />
-              </div>
-            ))}
-          </div>
-
-          <div className="grid grid-cols-3 gap-4">
-            {[
+            ],
+            [
               { key: 'deployment', label: 'Deployment' },
               { key: 'reporting', label: 'Enterprise Reporting' },
               { key: 'apis', label: 'APIs' }
-            ].map(({ key, label }) => (
-              <div key={key} className="bg-white rounded-xl border-2 border-gray-200 p-4">
-                <h4 className="font-bold text-gray-800 mb-2 text-sm">{label}</h4>
-                <input
-                  type="text"
-                  value={formData.selectedTechStack[key]}
-                  onChange={(e) => handleNestedChange('selectedTechStack', key, e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
-                  placeholder={`e.g., ${key === 'deployment' ? 'Docker, AWS' : key === 'reporting' ? 'Zoho' : 'Stripe API'}`}
-                />
-              </div>
-            ))}
-          </div>
-
-          <div className="grid grid-cols-3 gap-4">
-            {[
+            ],
+            [
               { key: 'localLlm', label: 'Local LLM' },
               { key: 'evalTools', label: 'Eval Tools' },
               { key: 'additional', label: 'Additional Tools' }
-            ].map(({ key, label }) => (
-              <div key={key} className="bg-white rounded-xl border-2 border-gray-200 p-4">
-                <h4 className="font-bold text-gray-800 mb-2 text-sm">{label}</h4>
-                <input
-                  type="text"
-                  value={formData.selectedTechStack[key]}
-                  onChange={(e) => handleNestedChange('selectedTechStack', key, e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
-                  placeholder={`e.g., ${key === 'localLlm' ? 'Ollama' : key === 'evalTools' ? 'LangSmith' : 'n8n'}`}
+            ]
+          ].map((row, rowIdx) => (
+            <div key={rowIdx} className="grid grid-cols-3 gap-3">
+              {row.map(({ key, label }) => (
+                <TechStackSelect
+                  key={key}
+                  label={label}
+                  selected={formData.selectedTechStack[key]}
+                  options={TECH_STACK_OPTIONS[key] || []}
+                  onChange={(val) => handleNestedChange('selectedTechStack', key, val)}
                 />
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ))}
         </div>
       </div>
 
@@ -1294,11 +1671,11 @@ export default function PRDGenerator() {
 
   // Step 2: Visual Style Guide (continued in next part due to length)
   const renderStep2 = () => (
-    <div className="space-y-8">
+    <div className="space-y-8 bg-blue-50 p-6 rounded-2xl">
       {/* Removed Visual Style Guide intro box per image reference */}
-      <div className="border-b-2 border-orange-200 pb-4 mb-6">
-        <h3 className="text-2xl font-bold text-orange-900">Visual Style Guide</h3>
-        <p className="text-orange-700 text-sm mt-1">Define your application's complete visual identity</p>
+      <div className="border-b-2 border-blue-200 pb-4 mb-6">
+        <h3 className="text-2xl font-bold text-blue-900">Visual Style Guide</h3>
+        <p className="text-blue-700 text-sm mt-1">Define your application's complete visual identity</p>
       </div>
 
       {/* Complete Style Preview - Moved to Top */}
@@ -1333,12 +1710,12 @@ export default function PRDGenerator() {
       {/* Logo & Photographs - Same Row */}
       <div>
         <label className="flex items-center text-base font-bold text-gray-800 mb-4">
-          <span className="w-8 h-8 bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">1</span>
+          <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">1</span>
           Logo & Brand Photography
           <HelpTooltip text={HELP_TEXTS.logo} />
         </label>
         <div className="grid grid-cols-3 gap-4">
-          <label className="cursor-pointer flex flex-col items-center justify-center px-6 py-6 bg-white border-2 border-dashed border-gray-300 rounded-xl hover:border-orange-400 transition-all">
+          <label className="cursor-pointer flex flex-col items-center justify-center px-6 py-6 bg-white border-2 border-dashed border-gray-300 rounded-xl hover:border-blue-400 transition-all">
             {formData.primaryLogo ? (
               <img src={formData.primaryLogo.base64} alt="Primary Logo" className="w-16 h-16 object-contain mb-2" />
             ) : (
@@ -1349,7 +1726,7 @@ export default function PRDGenerator() {
             <input type="file" accept=".svg,.png,.jpg" onChange={(e) => handleLogoUpload(e, 'primary')} className="hidden" />
           </label>
 
-          <label className="cursor-pointer flex flex-col items-center justify-center px-6 py-6 bg-white border-2 border-dashed border-gray-300 rounded-xl hover:border-orange-400 transition-all">
+          <label className="cursor-pointer flex flex-col items-center justify-center px-6 py-6 bg-white border-2 border-dashed border-gray-300 rounded-xl hover:border-blue-400 transition-all">
             {formData.secondaryLogo ? (
               <img src={formData.secondaryLogo.base64} alt="Secondary Logo" className="w-16 h-16 object-contain mb-2" />
             ) : (
@@ -1360,7 +1737,7 @@ export default function PRDGenerator() {
             <input type="file" accept=".svg,.png,.jpg,.ico" onChange={(e) => handleLogoUpload(e, 'secondary')} className="hidden" />
           </label>
 
-          <label className="cursor-pointer flex flex-col items-center justify-center px-6 py-6 bg-white border-2 border-dashed border-gray-300 rounded-xl hover:border-orange-400 transition-all">
+          <label className="cursor-pointer flex flex-col items-center justify-center px-6 py-6 bg-white border-2 border-dashed border-gray-300 rounded-xl hover:border-blue-400 transition-all">
             <Camera size={32} className="text-gray-400 mb-2" />
             <span className="font-medium text-gray-700 text-sm mb-1">Photographs</span>
             <span className="text-xs text-gray-500">Brand images</span>
@@ -1390,7 +1767,7 @@ export default function PRDGenerator() {
       {/* Color Palette */}
       <div>
         <label className="flex items-center text-base font-bold text-gray-800 mb-4">
-          <span className="w-8 h-8 bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">2</span>
+          <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">2</span>
           Color Palette
           <HelpTooltip text={HELP_TEXTS.colors} />
         </label>
@@ -1442,17 +1819,17 @@ export default function PRDGenerator() {
       {/* Typography */}
       <div>
         <label className="flex items-center text-base font-bold text-gray-800 mb-4">
-          <span className="w-8 h-8 bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">3</span>
+          <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">3</span>
           Typography
           <HelpTooltip text={HELP_TEXTS.typography} />
         </label>
         <div className="grid grid-cols-2 gap-5">
-          <div className="bg-gradient-to-br from-orange-50 to-amber-50 p-6 rounded-xl border-2 border-orange-200">
-            <label className="block text-sm font-bold text-orange-900 mb-3">Body Font</label>
+          <div className="bg-gradient-to-br from-blue-50 to-cyan-50 p-6 rounded-xl border-2 border-blue-200">
+            <label className="block text-sm font-bold text-blue-900 mb-3">Body Font</label>
             <select
               value={formData.primaryFont}
               onChange={(e) => handleInputChange('primaryFont', e.target.value)}
-              className="w-full px-4 py-3 bg-white border-2 border-orange-200 rounded-lg outline-none"
+              className="w-full px-4 py-3 bg-white border-2 border-blue-200 rounded-lg outline-none"
             >
               {FONT_OPTIONS.map(font => <option key={font} value={font}>{font}</option>)}
             </select>
@@ -1473,7 +1850,7 @@ export default function PRDGenerator() {
       {/* Heading Styles - With Previews */}
       <div>
         <label className="flex items-center text-base font-bold text-gray-800 mb-4">
-          <span className="w-8 h-8 bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">4</span>
+          <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">4</span>
           Heading Styles
           <HelpTooltip text={HELP_TEXTS.headingSizes} />
         </label>
@@ -1519,7 +1896,7 @@ export default function PRDGenerator() {
       {/* Chart & Data Visualization */}
       <div>
         <label className="flex items-center text-base font-bold text-gray-800 mb-4">
-          <span className="w-8 h-8 bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">5</span>
+          <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">5</span>
           Chart & Data Visualization
           <HelpTooltip text={HELP_TEXTS.charts} />
         </label>
@@ -1551,9 +1928,9 @@ export default function PRDGenerator() {
                 <button
                   onClick={() => aiEnhanceField('chartGuidelines')}
                   disabled={aiEnhancing}
-                  className="text-xs px-3 py-1 bg-orange-500 text-white rounded hover:bg-orange-600 disabled:opacity-50"
+                  className="text-xs px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
                 >
-                  {aiEnhancing ? 'Processing...' : 'AI Suggest'}
+                  {aiEnhancing ? 'Processing...' : 'AI Enhance'}
                 </button>
               </div>
               <textarea
@@ -1603,7 +1980,7 @@ export default function PRDGenerator() {
       {/* Image & Photography */}
       <div>
         <label className="flex items-center text-base font-bold text-gray-800 mb-4">
-          <span className="w-8 h-8 bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">6</span>
+          <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">6</span>
           Image & Photography Guidelines
           <HelpTooltip text={HELP_TEXTS.images} />
         </label>
@@ -1631,9 +2008,9 @@ export default function PRDGenerator() {
               <button
                 onClick={() => aiEnhanceField('imageGuidelines')}
                 disabled={aiEnhancing}
-                className="text-xs px-3 py-1 bg-orange-500 text-white rounded hover:bg-orange-600 disabled:opacity-50"
+                className="text-xs px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
               >
-                {aiEnhancing ? 'Processing...' : 'AI Suggest'}
+                {aiEnhancing ? 'Processing...' : 'AI Enhance'}
               </button>
             </div>
             <textarea
@@ -1648,7 +2025,7 @@ export default function PRDGenerator() {
           <div className="bg-white p-5 rounded-xl border-2 border-gray-200">
             <div className="text-sm font-semibold text-gray-700 mb-3">Visual Examples</div>
             <div className="grid grid-cols-2 gap-3">
-              {['from-orange-200 to-amber-300', 'from-blue-200 to-cyan-300', 'from-purple-200 to-pink-300', 'from-green-200 to-teal-300'].map((gradient, idx) => (
+              {['from-blue-200 to-cyan-300', 'from-blue-200 to-cyan-300', 'from-purple-200 to-pink-300', 'from-green-200 to-teal-300'].map((gradient, idx) => (
                 <div
                   key={idx}
                   className={`h-20 bg-gradient-to-br ${gradient}`}
@@ -1667,7 +2044,7 @@ export default function PRDGenerator() {
 
   // Step 3: Generate PRD
   const renderStep3 = () => (
-    <div className="space-y-6">
+    <div className="space-y-6 bg-blue-50 p-6 rounded-2xl">
       <div className="bg-gradient-to-br from-blue-50 to-cyan-50 rounded-xl border-2 border-blue-200 p-6">
         <h3 className="text-2xl font-bold text-blue-900 mb-2 flex items-center">
           Generate Product Requirements Document
@@ -1738,15 +2115,15 @@ export default function PRDGenerator() {
           <button
             onClick={() => handleExportPRD('pdf')}
             disabled={!formData.generatedPRD || isExporting}
-            className="p-6 bg-gradient-to-br from-orange-50 to-amber-50 border-2 border-orange-200 rounded-xl hover:shadow-lg transition-all disabled:opacity-50"
+            className="p-6 bg-gradient-to-br from-blue-50 to-cyan-50 border-2 border-blue-200 rounded-xl hover:shadow-lg transition-all disabled:opacity-50"
           >
             {isExporting ? (
-              <Loader2 size={32} className="mx-auto mb-3 text-orange-600 animate-spin" />
+              <Loader2 size={32} className="mx-auto mb-3 text-blue-600 animate-spin" />
             ) : (
-              <Download size={32} className="mx-auto mb-3 text-orange-600" />
+              <Download size={32} className="mx-auto mb-3 text-blue-600" />
             )}
-            <div className="font-bold text-orange-900 mb-1">3. Export</div>
-            <div className="text-xs text-orange-700">PDF, DOC, JSON</div>
+            <div className="font-bold text-blue-900 mb-1">3. Export</div>
+            <div className="text-xs text-blue-700">PDF, DOC, JSON</div>
           </button>
         </div>
       </div>
@@ -1851,34 +2228,9 @@ export default function PRDGenerator() {
             className="w-24 h-24 mx-auto mb-6 object-contain"
           />
           <h1 className="text-5xl font-black text-gray-900 mb-3">
-            Enterprise Application Builder
+            BuLLM Application Builder
           </h1>
           <p className="text-xl text-gray-600 font-medium">PRD Generator</p>
-
-          <div className="mt-4 flex items-center justify-center space-x-4">
-            <div className="flex items-center space-x-2">
-              <Save size={14} className={autoSaveStatus === 'saved' ? 'text-green-500' : 'text-gray-400'} />
-              <span className="text-sm text-gray-500">
-                {autoSaveStatus === 'saving' && 'Saving...'}
-                {autoSaveStatus === 'saved' && 'Saved'}
-                {autoSaveStatus === 'unsaved' && 'Unsaved'}
-                {autoSaveStatus === 'error' && 'Save Error'}
-              </span>
-            </div>
-            <button
-              onClick={saveAndContinue}
-              className="px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all"
-            >
-              Save & Continue
-            </button>
-            <button
-              onClick={() => setShowSettingsDialog(true)}
-              className="p-2 text-gray-500 hover:text-orange-500 transition-colors"
-              title="AI Settings"
-            >
-              <Settings size={20} />
-            </button>
-          </div>
         </div>
 
         {/* Progress */}
@@ -1970,7 +2322,7 @@ export default function PRDGenerator() {
           {/* Footer Branding */}
           <div className="bg-gradient-to-r from-gray-50 to-gray-100 px-8 py-4 border-t border-gray-200 text-center">
             <div className="text-sm text-gray-600 font-medium">
-              Powered by <span className="font-bold text-orange-600">BuLLM Coding System</span>
+              Powered by <span className="font-bold text-blue-600">BuLLM Coding System</span>
             </div>
           </div>
         </div>
@@ -1986,11 +2338,11 @@ export default function PRDGenerator() {
       {showTemplateDialog && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col">
-            <div className="bg-gradient-to-r from-orange-500 to-amber-500 px-6 py-4 flex justify-between items-center">
+            <div className="bg-gradient-to-r from-blue-500 to-cyan-500 px-6 py-4 flex justify-between items-center">
               <h3 className="text-xl font-bold text-white">
                 {formData.generatedPRD ? 'Generate Sales Proposal' : 'Use App Idea Template'}
               </h3>
-              <button onClick={() => setShowTemplateDialog(false)} className="text-white hover:text-orange-200">
+              <button onClick={() => setShowTemplateDialog(false)} className="text-white hover:text-blue-200">
                 <X size={24} />
               </button>
             </div>
@@ -2006,14 +2358,14 @@ export default function PRDGenerator() {
                         disabled={aiEnhancing}
                         className={`flex-1 p-4 border-2 rounded-lg transition-all disabled:opacity-50 ${
                           activeProposalTab === key && generatedProposalContent[key]
-                            ? 'border-orange-500 bg-orange-50'
-                            : 'border-gray-200 hover:border-orange-400 hover:bg-orange-50'
+                            ? 'border-blue-500 bg-blue-50'
+                            : 'border-gray-200 hover:border-blue-400 hover:bg-blue-50'
                         }`}
                       >
                         {aiEnhancing && activeProposalTab === key ? (
-                          <Loader2 size={20} className="mx-auto mb-2 animate-spin text-orange-500" />
+                          <Loader2 size={20} className="mx-auto mb-2 animate-spin text-blue-500" />
                         ) : (
-                          <Send size={20} className="mx-auto mb-2 text-orange-500" />
+                          <Send size={20} className="mx-auto mb-2 text-blue-500" />
                         )}
                         <div className="font-bold text-gray-900 text-sm">{template.name}</div>
                         <div className="text-xs text-gray-600 mt-1">{template.description}</div>
@@ -2030,7 +2382,7 @@ export default function PRDGenerator() {
                           onClick={() => setActiveProposalTab('coverLetter')}
                           className={`flex-1 px-4 py-3 font-semibold text-sm ${
                             activeProposalTab === 'coverLetter'
-                              ? 'bg-orange-50 text-orange-700 border-b-2 border-orange-500'
+                              ? 'bg-blue-50 text-blue-700 border-b-2 border-blue-500'
                               : 'text-gray-600 hover:bg-gray-50'
                           }`}
                           disabled={!generatedProposalContent.coverLetter}
@@ -2041,7 +2393,7 @@ export default function PRDGenerator() {
                           onClick={() => setActiveProposalTab('salesProposal')}
                           className={`flex-1 px-4 py-3 font-semibold text-sm ${
                             activeProposalTab === 'salesProposal'
-                              ? 'bg-orange-50 text-orange-700 border-b-2 border-orange-500'
+                              ? 'bg-blue-50 text-blue-700 border-b-2 border-blue-500'
                               : 'text-gray-600 hover:bg-gray-50'
                           }`}
                           disabled={!generatedProposalContent.salesProposal}
@@ -2109,7 +2461,7 @@ export default function PRDGenerator() {
               {!formData.generatedPRD && (
                 <button
                   onClick={handleTemplateApply}
-                  className="px-6 py-3 bg-gradient-to-r from-orange-500 to-amber-500 text-white font-semibold rounded-lg hover:shadow-lg"
+                  className="px-6 py-3 bg-gradient-to-r from-blue-500 to-cyan-500 text-white font-semibold rounded-lg hover:shadow-lg"
                 >
                   Apply Template
                 </button>
@@ -2123,7 +2475,7 @@ export default function PRDGenerator() {
       {showUndoDialog && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full">
-            <div className="bg-gradient-to-r from-orange-500 to-amber-500 px-6 py-4">
+            <div className="bg-gradient-to-r from-blue-500 to-cyan-500 px-6 py-4">
               <h3 className="text-xl font-bold text-white flex items-center">
                 <Wand2 size={24} className="mr-3" />
                 AI Enhancement Preview
@@ -2139,8 +2491,8 @@ export default function PRDGenerator() {
                 </div>
               </div>
               <div>
-                <h4 className="font-semibold text-gray-700 mb-2">AI Suggested:</h4>
-                <div className="bg-orange-50 p-4 rounded-lg">
+                <h4 className="font-semibold text-gray-700 mb-2">AI Enhanceed:</h4>
+                <div className="bg-blue-50 p-4 rounded-lg">
                   <pre className="whitespace-pre-wrap text-sm text-gray-800">
                     {pendingChanges.newValue}
                   </pre>
@@ -2156,10 +2508,54 @@ export default function PRDGenerator() {
               </button>
               <button
                 onClick={acceptAiChanges}
-                className="px-6 py-3 bg-gradient-to-r from-orange-500 to-amber-500 text-white font-semibold rounded-lg hover:shadow-lg"
+                className="px-6 py-3 bg-gradient-to-r from-blue-500 to-cyan-500 text-white font-semibold rounded-lg hover:shadow-lg"
               >
                 Accept Changes
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* File Analysis Preview Dialog */}
+      {showFileAnalysisDialog && pendingFileFields && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full">
+            <div className="bg-gradient-to-r from-emerald-500 to-teal-500 px-6 py-4">
+              <h3 className="text-xl font-bold text-white flex items-center">
+                <FileCheck size={24} className="mr-3" />
+                AI File Analysis — {Object.keys(pendingFileFields).length} Field{Object.keys(pendingFileFields).length > 1 ? 's' : ''} Found
+              </h3>
+              <p className="text-emerald-100 text-sm mt-1">Review extracted information before applying to your PRD</p>
+            </div>
+            <div className="p-6 max-h-96 overflow-y-auto space-y-4">
+              {Object.entries(pendingFileFields).map(([key, value]) => (
+                <div key={key} className="border border-gray-200 rounded-lg overflow-hidden">
+                  <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                    <span className="font-semibold text-gray-700 text-sm">{fieldLabels[key] || key}</span>
+                  </div>
+                  <div className="px-4 py-3">
+                    <pre className="whitespace-pre-wrap text-sm text-gray-800">{value}</pre>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="bg-gray-50 px-6 py-4 flex justify-between items-center border-t">
+              <span className="text-xs text-gray-500">Fields will overwrite empty form values only</span>
+              <div className="flex space-x-3">
+                <button
+                  onClick={dismissFileAnalysis}
+                  className="px-6 py-3 bg-white border-2 border-gray-300 text-gray-700 font-semibold rounded-lg hover:bg-gray-100"
+                >
+                  Dismiss
+                </button>
+                <button
+                  onClick={acceptFileAnalysis}
+                  className="px-6 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-semibold rounded-lg hover:shadow-lg"
+                >
+                  Apply {Object.keys(pendingFileFields).length} Field{Object.keys(pendingFileFields).length > 1 ? 's' : ''}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -2181,7 +2577,7 @@ export default function PRDGenerator() {
                 <span className={`px-3 py-1 rounded-full text-sm font-medium ${
                   backendStatus === 'ready' ? 'bg-green-100 text-green-700' :
                   backendStatus === 'checking' ? 'bg-yellow-100 text-yellow-700' :
-                  backendStatus === 'not_configured' ? 'bg-orange-100 text-orange-700' :
+                  backendStatus === 'not_configured' ? 'bg-blue-100 text-blue-700' :
                   'bg-red-100 text-red-700'
                 }`}>
                   {backendStatus === 'ready' ? 'Connected' :
@@ -2209,10 +2605,10 @@ export default function PRDGenerator() {
               )}
 
               {backendStatus === 'not_configured' && (
-                <div className="p-3 bg-orange-50 border border-orange-200 rounded-lg text-sm text-orange-800">
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800">
                   <AlertCircle size={16} className="inline mr-2" />
                   API key not configured. Add your key to:
-                  <code className="block mt-2 p-2 bg-orange-100 rounded text-xs">
+                  <code className="block mt-2 p-2 bg-blue-100 rounded text-xs">
                     backend/.env
                   </code>
                 </div>

@@ -106,6 +106,21 @@ class AIService {
   async enhancePrdPrompt(currentPrompt, appName, appIdea) {
     return this.callBackend('/enhance-prd-prompt', { currentPrompt, appName, appIdea });
   }
+
+  // Analyze uploaded files for auto-fill
+  async analyzeUploadedFiles(files, currentFormData) {
+    return this.callBackend('/analyze-files', { files, currentFormData });
+  }
+
+  // Analyze a cloud drive link for auto-fill
+  async analyzeDriveLink(url, source, currentFormData) {
+    return this.callBackend('/analyze-link', { url, source, currentFormData });
+  }
+
+  // Claude Cowork: scan all sources and analyze
+  async coworkFetch(payload) {
+    return this.callBackend('/cowork-fetch', payload);
+  }
 }
 
 // Export singleton instance

@@ -87,7 +87,7 @@ export const exportToPDF = async (prdContent, formData) => {
   };
 
   // Header with gradient effect (simulated with rectangle)
-  pdf.setFillColor(253, 155, 0); // Primary color
+  pdf.setFillColor(0, 147, 182); // Primary color
   pdf.rect(0, 0, pageWidth, 35, 'F');
 
   // Title
@@ -116,7 +116,7 @@ export const exportToPDF = async (prdContent, formData) => {
         if (element.level === 1) {
           pdf.setFontSize(18);
           pdf.setFont('helvetica', 'bold');
-          pdf.setTextColor(253, 155, 0);
+          pdf.setTextColor(0, 147, 182);
         } else if (element.level === 2) {
           pdf.setFontSize(14);
           pdf.setFont('helvetica', 'bold');
@@ -205,7 +205,7 @@ export const exportToDOCX = async (prdContent, formData) => {
           text: 'Product Requirements Document',
           bold: true,
           size: 48,
-          color: 'FD9B00'
+          color: '0093B6'
         })
       ],
       heading: HeadingLevel.TITLE,
@@ -252,7 +252,7 @@ export const exportToDOCX = async (prdContent, formData) => {
                 text: stripMarkdown(element.content),
                 bold: true,
                 size: element.level === 1 ? 32 : element.level === 2 ? 28 : 24,
-                color: element.level === 1 ? 'FD9B00' : element.level === 2 ? '0093B6' : '000000'
+                color: element.level === 1 ? '0093B6' : element.level === 2 ? '0093B6' : '000000'
               })
             ],
             heading: headingLevel,
