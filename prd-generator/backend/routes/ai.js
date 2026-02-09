@@ -5,6 +5,15 @@ const path = require('path');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
 
+// Helper: check if a form field value is empty (handles strings, arrays, objects)
+const isFieldEmpty = (val) => {
+  if (val === null || val === undefined) return true;
+  if (typeof val === 'string') return val.trim() === '';
+  if (Array.isArray(val)) return val.length === 0;
+  if (typeof val === 'object') return Object.keys(val).length === 0;
+  return false;
+};
+
 // Get API configuration from environment
 const getConfig = () => ({
   provider: process.env.AI_PROVIDER || 'openai',
@@ -379,16 +388,18 @@ router.post('/discover-competitors', async (req, res, next) => {
   try {
     const { appName, appIdea, targetAudience } = req.body;
 
-    const prompt = `Find and analyze 3 main competitors for a product called "${appName}" that "${appIdea}" targeting ${(targetAudience || []).join(', ') || 'general users'}.
+    const prompt = `You are a product strategist helping build a PRD (Product Requirements Document) for "${appName}" — ${appIdea}.
+Target audience: ${(targetAudience || []).join(', ') || 'general users'}.
 
-For each competitor, provide:
-1. Company/Product Name
-2. Website URL (use real URLs)
-3. Brief analysis: their strengths and your opportunity to differentiate
+Identify 3 main competitors or alternative solutions in this space. For each competitor, provide a PRD-relevant analysis covering:
+- Key features that overlap with or threaten our product
+- Their target audience and market positioning
+- Gaps or weaknesses we can exploit as product differentiators
+- Feature parity requirements (what we MUST match to compete)
 
 Format as JSON array:
 [
-  {"name": "Competitor Name", "url": "https://competitor.com", "analysis": "Their strength. Your opportunity."},
+  {"name": "Competitor Name", "url": "https://competitor.com", "analysis": "PRD-relevant analysis here"},
   ...
 ]
 
@@ -399,7 +410,11 @@ Return only the JSON array, no other text.`;
     try {
       const jsonMatch = response.match(/\[[\s\S]*\]/);
       if (jsonMatch) {
-        const competitors = JSON.parse(jsonMatch[0]);
+        const competitors = JSON.parse(jsonMatch[0]).map(c => ({
+          name: c.name || '',
+          url: c.url || '',
+          analysis: typeof c.analysis === 'string' ? c.analysis : formatAnalysisObject(c.analysis)
+        }));
         res.json({ success: true, data: competitors });
         return;
       }
@@ -415,6 +430,91 @@ Return only the JSON array, no other text.`;
         { name: '', url: '', analysis: '' }
       ]
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Helper: flatten a nested analysis object into readable text
+function formatAnalysisObject(obj) {
+  if (!obj || typeof obj === 'string') return obj || '';
+  return Object.entries(obj).map(([key, val]) => {
+    const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    if (Array.isArray(val)) return `${label}:\n${val.map(v => `  - ${v}`).join('\n')}`;
+    return `${label}: ${val}`;
+  }).join('\n\n');
+}
+
+// Helper: flatten nested painPoints object into readable text
+function formatPainPointsObject(obj) {
+  if (!obj || typeof obj === 'string') return obj || '';
+  let sections = [];
+  for (const [key, val] of Object.entries(obj)) {
+    if (key.toLowerCase() === 'prd opportunity' || key === 'PRD Opportunity') {
+      sections.push(`**PRD Opportunity:**\n${val}`);
+    } else if (Array.isArray(val)) {
+      sections.push(`**${key}:**\n${val.map(v => `- ${v}`).join('\n')}`);
+    } else {
+      sections.push(`**${key}:**\n${val}`);
+    }
+  }
+  return sections.join('\n\n');
+}
+
+// Discover competitor pain points from review sites
+router.post('/discover-competitor-painpoints', async (req, res, next) => {
+  try {
+    const { competitorName, appName, appIdea } = req.body;
+
+    if (!competitorName) {
+      return res.status(400).json({ success: false, error: 'Competitor name is required' });
+    }
+
+    const prompt = `You are a competitive intelligence analyst helping build a PRD for "${appName}" — ${appIdea}.
+
+Research the competitor "${competitorName}" and extract user pain points, complaints, and negative feedback as commonly found on software review platforms. Organize by source:
+
+**G2 Reviews:**
+- List 3-5 common pain points/complaints users report about "${competitorName}" on G2
+- Focus on feature gaps, UX issues, pricing concerns, and support problems
+
+**TrustRadius Reviews:**
+- List 3-5 common pain points/complaints users report about "${competitorName}" on TrustRadius
+- Focus on enterprise concerns, integration issues, and scalability problems
+
+**SourceForge Reviews:**
+- List 3-5 common pain points/complaints users report about "${competitorName}" on SourceForge
+- Focus on technical issues, missing features, and community feedback
+
+End with a brief "PRD Opportunity" summary: 2-3 sentences on how our product "${appName}" can address these pain points as competitive advantages.
+
+Also provide the competitor's website URL.
+
+Format as JSON:
+{"url": "https://competitor.com", "painPoints": "the full formatted text above with G2, TrustRadius, SourceForge sections and PRD Opportunity"}
+
+Return only the JSON object, no other text.`;
+
+    const response = await callAI(prompt);
+
+    try {
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const result = JSON.parse(jsonMatch[0]);
+        res.json({
+          success: true,
+          data: {
+            url: result.url || '',
+            painPoints: typeof result.painPoints === 'string' ? result.painPoints : formatPainPointsObject(result.painPoints)
+          }
+        });
+        return;
+      }
+    } catch (e) {
+      console.error('Failed to parse pain points JSON:', e);
+    }
+
+    res.json({ success: false, error: 'Failed to extract pain points' });
   } catch (error) {
     next(error);
   }
@@ -474,7 +574,7 @@ router.post('/generate-prd', async (req, res, next) => {
 
 **App Name:** ${formData.appName}
 **App Idea:** ${formData.appIdea}
-**Platform:** ${formData.platform}
+**Platform:** ${Array.isArray(formData.platform) ? formData.platform.join(', ') : formData.platform}
 
 **Problem Statement:**
 ${formData.problemStatement}
@@ -570,7 +670,7 @@ PROJECT DETAILS:
 - Goal: ${formData.goal}
 - Problem Statement: ${formData.problemStatement}
 - Target Audience: ${(formData.targetAudienceDemography || []).join(', ')} in ${(formData.targetAudienceGeography || []).join(', ')}
-- Platform: ${formData.platform}
+- Platform: ${Array.isArray(formData.platform) ? formData.platform.join(', ') : formData.platform}
 - Timeline: ${timelineInfo || 'To be discussed'}
 ${milestones ? `\nMilestones:\n${milestones}` : ''}
 
@@ -596,7 +696,7 @@ PROJECT INFORMATION:
 - Goal: ${formData.goal}
 - Problem Statement: ${formData.problemStatement}
 - Target Audience: ${(formData.targetAudienceDemography || []).join(', ')} in ${(formData.targetAudienceGeography || []).join(', ')}
-- Platform: ${formData.platform}
+- Platform: ${Array.isArray(formData.platform) ? formData.platform.join(', ') : formData.platform}
 - Tech Stack: ${Object.entries(formData.selectedTechStack || {}).filter(([k, v]) => Array.isArray(v) ? v.length > 0 : v).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join(', ')}
 - Timeline: ${timelineInfo || 'To be discussed'}
 ${milestones ? `\nMilestones:\n${milestones}` : ''}
@@ -716,7 +816,7 @@ router.post('/analyze-files', async (req, res, next) => {
     };
 
     const emptyFields = Object.entries(targetFields)
-      .filter(([key]) => !currentFormData[key] || currentFormData[key].trim() === '')
+      .filter(([key]) => isFieldEmpty(currentFormData[key]))
       .map(([key, desc]) => `- ${key}: ${desc}`)
       .join('\n');
 
@@ -767,7 +867,7 @@ Return ONLY a raw JSON object. No markdown, no code blocks, no explanation.`;
     // Filter to only target fields that are empty
     const validFields = {};
     for (const key of Object.keys(targetFields)) {
-      if (fields[key] && (!currentFormData[key] || currentFormData[key].trim() === '')) {
+      if (fields[key] && (isFieldEmpty(currentFormData[key]))) {
         validFields[key] = fields[key];
       }
     }
@@ -811,7 +911,7 @@ router.post('/analyze-link', async (req, res, next) => {
     };
 
     const emptyFields = Object.entries(targetFields)
-      .filter(([key]) => !currentFormData[key] || currentFormData[key].trim() === '')
+      .filter(([key]) => isFieldEmpty(currentFormData[key]))
       .map(([key, desc]) => `- ${key}: ${desc}`)
       .join('\n');
 
@@ -861,7 +961,7 @@ Return ONLY a raw JSON object. No markdown, no code blocks, no explanation.`;
     // Filter to only target fields that are empty
     const validFields = {};
     for (const key of Object.keys(targetFields)) {
-      if (fields[key] && (!currentFormData[key] || currentFormData[key].trim() === '')) {
+      if (fields[key] && (isFieldEmpty(currentFormData[key]))) {
         validFields[key] = fields[key];
       }
     }
@@ -1087,15 +1187,62 @@ router.post('/cowork-fetch', async (req, res, next) => {
       }
     }
 
-    // --- 5. Check if we got anything ---
-    if (allTexts.length === 0) {
-      return res.json({
-        success: true,
-        data: { fields: {}, relevantCount: 0, scannedCount: 0, warning: 'No readable content found from any source.' }
+    // --- 5. Match scanned files to BuLLM Document Checklist categories ---
+    const categoryKeywords = {
+      app_idea: ['idea', 'concept', 'vision', 'pitch', 'overview', 'brief', 'proposal', 'summary', 'about'],
+      design_doc: ['design', 'sdd', 'srs', 'brd', 'frd', 'functional', 'software design', 'spec', 'requirement'],
+      notebooklm: ['notebooklm', 'notebook', 'nlm'],
+      storm_pdf: ['storm', 'storm pdf'],
+      client_expectations: ['client', 'expectation', 'stakeholder', 'scope'],
+      process_flow: ['flow', 'process', 'journey', 'workflow', 'diagram', 'wireframe', 'sitemap', 'navigation', 'ux', 'ui'],
+      data_schema: ['schema', 'data', 'database', 'erd', 'model', 'entity', 'table', 'sql', 'migration'],
+      video_walkthrough: ['video', 'walkthrough', 'demo', 'recording', 'screencast', 'mp4', 'mov', 'webm'],
+      screenshots: ['screenshot', 'screen', 'capture', 'snapshot', 'existing tool', 'png', 'jpg', 'jpeg'],
+      legacy_code: ['legacy', 'code', 'source', 'codebase', 'repo'],
+      competitive_tools: ['competitor', 'competition', 'competitive', 'market', 'benchmark', 'comparison', 'landscape'],
+      integrations_3p: ['3rd party', 'third party', 'external', 'plugin', 'addon'],
+      apis: ['api', 'endpoint', 'rest', 'graphql', 'swagger', 'openapi'],
+      mcps: ['mcp', 'model context'],
+      integrations: ['integration', 'connect', 'sync', 'webhook', 'oauth']
+    };
+
+    const categoryLabels = {
+      app_idea: 'App Idea Document', design_doc: 'Software Design Document', notebooklm: 'NotebookLM',
+      storm_pdf: 'STORM PDF', client_expectations: 'Client Expectations', process_flow: 'Proposed Process Flow',
+      data_schema: 'Data schema', video_walkthrough: 'Video walkthrough', screenshots: 'Screenshots of existing tool',
+      legacy_code: 'Legacy Code', competitive_tools: 'List of competitive tools & websites',
+      integrations_3p: 'Integrations with 3rd party tools', apis: 'APIs', mcps: 'MCPs', integrations: 'Integrations'
+    };
+
+    // Match each scanned file to a checklist category
+    const matchedFiles = [];
+    for (const file of scannedFiles) {
+      const nameLower = file.name.toLowerCase().replace(/[_\-./\\]/g, ' ');
+      let matchedCategory = null;
+      for (const [catId, keywords] of Object.entries(categoryKeywords)) {
+        if (keywords.some(kw => nameLower.includes(kw))) {
+          matchedCategory = catId;
+          break;
+        }
+      }
+      matchedFiles.push({
+        ...file,
+        category: matchedCategory,
+        categoryLabel: matchedCategory ? categoryLabels[matchedCategory] : null
       });
     }
 
-    // --- 6. Determine empty fields ---
+    const categorizedFiles = matchedFiles.filter(f => f.category);
+
+    // --- 6. Check if any files matched ---
+    if (categorizedFiles.length === 0 && allTexts.length === 0) {
+      return res.json({
+        success: true,
+        data: { fields: {}, relevantCount: 0, scannedCount: scannedFiles.length, scannedFiles: matchedFiles, warning: 'No files matching BuLLM Document Checklist categories were found.' }
+      });
+    }
+
+    // --- 7. Determine empty fields ---
     const targetFields = {
       appName: 'App name',
       appIdea: 'Brief app description (max 100 chars)',
@@ -1107,23 +1254,28 @@ router.post('/cowork-fetch', async (req, res, next) => {
     };
 
     const emptyFields = Object.entries(targetFields)
-      .filter(([key]) => !currentFormData[key] || currentFormData[key].trim() === '')
+      .filter(([key]) => isFieldEmpty(currentFormData[key]))
       .map(([key, desc]) => `- ${key}: ${desc}`)
       .join('\n');
 
     if (!emptyFields) {
       return res.json({
         success: true,
-        data: { fields: {}, relevantCount: 0, scannedCount: scannedFiles.length }
+        data: { fields: {}, relevantCount: 0, scannedCount: scannedFiles.length, scannedFiles: matchedFiles }
       });
     }
 
-    // --- 7. AI analysis ---
+    // --- 8. Build file-to-category mapping for AI context ---
+    const fileMapping = matchedFiles.map(f =>
+      `- "${f.name}" (source: ${f.source}) → Category: ${f.categoryLabel || 'Uncategorized'}`
+    ).join('\n');
+
+    // --- 9. AI analysis ---
     const combinedContent = allTexts.join('\n\n---\n\n');
 
-    const prompt = `You are reading content gathered from multiple sources: local files, uploaded documents, Google Drive, and OneDrive. The content may be meeting notes, design docs, brainstorms, code files, schemas, or any unstructured text. Files will NOT have neat headings like "Problem Statement" or "Goal".
+    const prompt = `You are reading content gathered from multiple sources. Each file has been categorized against the BuLLM Document Checklist:
 
-Your job: read everything holistically, understand the product/app being described, then extract and map relevant information to the PRD fields below.
+${fileMapping}
 
 --- ALL DOCUMENT CONTENTS (${scannedFiles.length} files) ---
 ${combinedContent}
@@ -1133,7 +1285,8 @@ Map information to these currently empty PRD fields:
 ${emptyFields}
 
 Instructions:
-- Read all content holistically — cross-reference across files for a complete picture.
+- ONLY extract information from files that match a BuLLM Document Checklist category. Ignore uncategorized files.
+- For EACH field you extract, you MUST specify which file (by exact filename) the information came from.
 - Infer the app name from context (product name, project title, etc.).
 - Infer the problem statement from pain points, user complaints, market gaps, or "why" descriptions.
 - Infer the goal from success criteria, KPIs, objectives, or desired outcomes.
@@ -1141,9 +1294,12 @@ Instructions:
 - For appIdea, write a concise one-liner (max 100 chars) summarizing what the app does.
 - For platform, only fill if content clearly mentions web, mobile, iOS, Android, desktop, etc.
 - Only include fields where you found genuinely relevant information. Do not guess or fabricate.
-- If nothing relevant is found, return an empty object {}.
+- If nothing relevant is found for a field, omit it.
 
-Return ONLY a raw JSON object. No markdown, no code blocks, no explanation.`;
+Return a JSON object where each key is a field name and the value is an object with "value" (the extracted text) and "sourceFile" (exact filename it was extracted from).
+Example: {"appName": {"value": "TaskFlow", "sourceFile": "app-idea.pdf"}, "problemStatement": {"value": "...", "sourceFile": "client-expectations.docx"}}
+
+Return ONLY the raw JSON object. No markdown, no code blocks, no explanation.`;
 
     const systemPrompt = 'You are a senior product analyst. You specialize in reading diverse unstructured documents — meeting notes, code files, design docs, schemas, emails — and extracting structured product requirements. Be accurate. Never fabricate. Return only valid JSON.';
 
@@ -1158,11 +1314,18 @@ Return ONLY a raw JSON object. No markdown, no code blocks, no explanation.`;
       fields = {};
     }
 
-    // Filter to only empty target fields
+    // Filter to only empty target fields and normalize response format
     const validFields = {};
+    const fieldSources = {};
     for (const key of Object.keys(targetFields)) {
-      if (fields[key] && (!currentFormData[key] || currentFormData[key].trim() === '')) {
-        validFields[key] = fields[key];
+      if (fields[key] && (isFieldEmpty(currentFormData[key]))) {
+        if (typeof fields[key] === 'object' && fields[key].value) {
+          validFields[key] = fields[key].value;
+          fieldSources[key] = fields[key].sourceFile || 'Unknown';
+        } else if (typeof fields[key] === 'string') {
+          validFields[key] = fields[key];
+          fieldSources[key] = 'Unknown';
+        }
       }
     }
 
@@ -1172,9 +1335,10 @@ Return ONLY a raw JSON object. No markdown, no code blocks, no explanation.`;
       success: true,
       data: {
         fields: validFields,
+        fieldSources,
         relevantCount,
         scannedCount: scannedFiles.length,
-        scannedFiles
+        scannedFiles: matchedFiles
       }
     });
   } catch (error) {

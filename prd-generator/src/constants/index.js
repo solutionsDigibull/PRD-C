@@ -3,7 +3,7 @@
 export const STEPS = [
   { id: 0, title: 'App Concept & Scope', subtitle: 'Define your vision', icon: 'Sparkles', gradient: 'from-blue-500 to-cyan-500', bg: 'bg-blue-50', color: '#0093B6' },
   { id: 1, title: 'Platform & Tech Stack', subtitle: 'Choose your foundation', icon: 'Rocket', gradient: 'from-blue-500 to-cyan-500', bg: 'bg-blue-50', color: '#0093B6' },
-  { id: 2, title: 'Visual Style Guide', subtitle: 'Build your brand', icon: 'Palette', gradient: 'from-blue-500 to-cyan-500', bg: 'bg-blue-50', color: '#0093B6' },
+  { id: 2, title: 'Visual Style Guide', subtitle: "Define your application's complete visual identity", icon: 'Palette', gradient: 'from-blue-500 to-cyan-500', bg: 'bg-blue-50', color: '#0093B6' },
   { id: 3, title: 'Generate PRD', subtitle: 'Create & Deploy', icon: 'FileText', gradient: 'from-blue-500 to-cyan-500', bg: 'bg-blue-50', color: '#0093B6' }
 ];
 
@@ -25,7 +25,7 @@ export const PLATFORM_OPTIONS = [
   { name: 'Report Builder', emoji: '📊', sub: 'Data & Reports' },
   { name: 'Chrome Extension', emoji: '🔌', sub: 'Browser Ext' },
   // Row 3
-  { name: 'CLI Tools', emoji: '🖥️', sub: 'Terminal' },
+  { name: 'ML', emoji: '📈', sub: 'Machine Learning' },
   { name: 'Microservices', emoji: '🧩', sub: 'Backend' },
   { name: 'AI Agents', emoji: '🧠', sub: 'Autonomous' },
   { name: 'MCP / APIs', emoji: '🔗', sub: 'Integrations' }
@@ -148,24 +148,24 @@ export const PROPOSAL_TEMPLATES = {
 };
 
 export const PRD_REVIEW_CHECKLIST = [
-  { id: 'executive_summary', label: 'Executive Summary reviewed', category: 'Overview', checkField: 'appIdea' },
-  { id: 'product_vision', label: 'Product Vision aligned', category: 'Strategy', checkField: 'goal' },
-  { id: 'problem_statement', label: 'Problem Statement validated', category: 'Overview', checkField: 'problemStatement' },
-  { id: 'target_users', label: 'Target Users & Personas defined', category: 'Users', checkField: 'targetAudienceDemography' },
-  { id: 'solution_overview', label: 'Solution Overview reviewed', category: 'Approach', checkField: 'appStructure' },
-  { id: 'user_stories', label: 'User Stories validated', category: 'Requirements', checkField: 'appStructure' },
-  { id: 'feature_requirements', label: 'Feature Requirements detailed', category: 'Features', checkField: 'appStructure' },
-  { id: 'acceptance_criteria', label: 'Acceptance Criteria defined', category: 'Quality', checkField: 'goal' },
-  { id: 'ui_wireframes', label: 'UI/Wireframes reviewed', category: 'Design', checkField: 'primaryColor' },
-  { id: 'nonfunctional_requirements', label: 'Non-Functional Requirements captured', category: 'Quality', checkField: 'platform' },
-  { id: 'tech_stack', label: 'Technology Stack confirmed', category: 'Technical', checkField: 'selectedTechStack' },
-  { id: 'tech_architecture', label: 'Technical Architecture reviewed', category: 'Technical', checkField: 'selectedTechStack' },
-  { id: 'success_metrics', label: 'Success Metrics & KPIs set', category: 'Metrics', checkField: 'goal' },
-  { id: 'timeline', label: 'Timeline & Milestones approved', category: 'Planning', checkField: 'milestones' },
-  { id: 'risks_constraints', label: 'Risks, Constraints & Dependencies reviewed', category: 'Planning', checkField: 'outOfScope' },
-  { id: 'open_questions', label: 'Open Questions documented', category: 'Planning', checkField: null },
-  { id: 'out_of_scope', label: 'Out of Scope items documented', category: 'Planning', checkField: 'outOfScope' },
-  { id: 'appendices', label: 'Appendices & references verified', category: 'Documentation', checkField: 'uploadedFiles' }
+  { id: 'executive_summary', label: 'Executive Summary reviewed', category: 'Overview', checkField: 'appIdea', prdSearch: 'Executive Summary' },
+  { id: 'product_vision', label: 'Product Vision aligned', category: 'Strategy', checkField: 'goal', prdSearch: 'Product Vision' },
+  { id: 'problem_statement', label: 'Problem Statement validated', category: 'Overview', checkField: 'problemStatement', prdSearch: 'Problem Statement' },
+  { id: 'target_users', label: 'Target Users & Personas defined', category: 'Users', checkField: 'targetAudienceDemography', prdSearch: 'Target Users' },
+  { id: 'solution_overview', label: 'Solution Overview reviewed', category: 'Approach', checkField: 'appStructure', prdSearch: 'Solution Overview' },
+  { id: 'user_stories', label: 'User Stories validated', category: 'Requirements', checkField: 'appStructure', prdSearch: 'User Stories' },
+  { id: 'feature_requirements', label: 'Feature Requirements detailed', category: 'Features', checkField: 'appStructure', prdSearch: 'Feature Requirements' },
+  { id: 'acceptance_criteria', label: 'Acceptance Criteria defined', category: 'Quality', checkField: 'goal', prdSearch: 'Acceptance Criteria' },
+  { id: 'ui_wireframes', label: 'UI/Wireframes reviewed', category: 'Design', checkField: 'primaryColor', prdSearch: 'UI' },
+  { id: 'nonfunctional_requirements', label: 'Non-Functional Requirements captured', category: 'Quality', checkField: 'platform', prdSearch: 'Non-Functional' },
+  { id: 'tech_stack', label: 'Technology Stack confirmed', category: 'Technical', checkField: 'selectedTechStack', prdSearch: 'Technology Stack' },
+  { id: 'tech_architecture', label: 'Technical Architecture reviewed', category: 'Technical', checkField: 'selectedTechStack', prdSearch: 'Technical Architecture' },
+  { id: 'success_metrics', label: 'Success Metrics & KPIs set', category: 'Metrics', checkField: 'goal', prdSearch: 'Success Metrics' },
+  { id: 'timeline', label: 'Timeline & Milestones approved', category: 'Planning', checkField: 'milestones', prdSearch: 'Timeline' },
+  { id: 'risks_constraints', label: 'Risks, Constraints & Dependencies reviewed', category: 'Planning', checkField: 'outOfScope', prdSearch: 'Risks' },
+  { id: 'open_questions', label: 'Open Questions documented', category: 'Planning', checkField: null, prdSearch: 'Open Questions' },
+  { id: 'out_of_scope', label: 'Out of Scope items documented', category: 'Planning', checkField: 'outOfScope', prdSearch: 'Out of Scope' },
+  { id: 'appendices', label: 'Appendices & references verified', category: 'Documentation', checkField: 'uploadedFiles', prdSearch: 'Appendix' }
 ];
 
 export const DOCUMENT_CHECKLIST = [
@@ -251,7 +251,7 @@ export const INITIAL_FORM_DATA = {
   googleDriveLink: '',
   oneDriveLink: '',
   zipFiles: [],
-  platform: '',
+  platform: [],
   numberOfUsers: '',
   numberOfAdmins: '',
   appStructure: { defaultScreen: '', workingScreen: '', otherScreens: '' },

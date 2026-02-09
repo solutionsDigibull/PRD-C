@@ -67,6 +67,11 @@ export const useAI = () => {
     return executeAI(() => aiService.discoverCompetitors(appName, appIdea, targetAudience));
   }, [executeAI]);
 
+  // Discover competitor pain points from review sites
+  const discoverCompetitorPainpoints = useCallback(async (competitorName, appName, appIdea) => {
+    return executeAI(() => aiService.discoverCompetitorPainpoints(competitorName, appName, appIdea));
+  }, [executeAI]);
+
   // Suggest chart guidelines
   const suggestChartGuidelines = useCallback(async (primaryColor, secondaryColor) => {
     return executeAI(() => aiService.suggestChartGuidelines(primaryColor, secondaryColor));
@@ -135,6 +140,7 @@ export const useAI = () => {
     suggestOutOfScope,
     recommendAPIs,
     discoverCompetitors,
+    discoverCompetitorPainpoints,
     suggestChartGuidelines,
     suggestImageGuidelines,
     generatePRD,

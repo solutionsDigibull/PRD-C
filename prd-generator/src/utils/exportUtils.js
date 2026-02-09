@@ -366,7 +366,7 @@ export const exportToJSON = (prdContent, formData) => {
     project: {
       name: formData.appName,
       idea: formData.appIdea,
-      platform: formData.platform,
+      platform: (formData.platform || []).join(', '),
       type: formData.projectType,
       dueDate: formData.dueDate
     },
@@ -450,8 +450,20 @@ export const downloadBlob = (blob, filename) => {
 };
 
 /**
+ * Export PRD to Markdown format
+ * @param {string} prdContent - The PRD content (already markdown)
+ * @param {object} formData - Form data for metadata
+ * @returns {Blob}
+ */
+export const exportToMarkdown = (prdContent, formData) => {
+  const header = `# Product Requirements Document\n**${formData.appName || 'Application'}** | Version ${formData.prdVersion || '1.0'} | ${new Date().toLocaleDateString()}\n\n---\n\n`;
+  const content = header + prdContent;
+  return new Blob([content], { type: 'text/markdown' });
+};
+
+/**
  * Export PRD in the specified format
- * @param {string} format - 'pdf', 'docx', or 'json'
+ * @param {string} format - 'pdf', 'docx', 'json', or 'md'
  * @param {string} prdContent - The PRD content
  * @param {object} formData - Form data
  */
@@ -478,6 +490,12 @@ export const exportPRD = async (format, prdContent, formData) => {
       case 'json':
         blob = exportToJSON(prdContent, formData);
         filename = `${appName}-PRD-${timestamp}.json`;
+        break;
+
+      case 'md':
+      case 'markdown':
+        blob = exportToMarkdown(prdContent, formData);
+        filename = `${appName}-PRD-${timestamp}.md`;
         break;
 
       default:

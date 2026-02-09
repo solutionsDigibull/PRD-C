@@ -124,6 +124,7 @@ export default function PRDGenerator() {
     suggestOutOfScope,
     recommendAPIs,
     discoverCompetitors,
+    discoverCompetitorPainpoints,
     suggestChartGuidelines,
     suggestImageGuidelines,
     generatePRD: generatePRDFromAI,
@@ -166,10 +167,16 @@ export default function PRDGenerator() {
   const [coworkSources, setCoworkSources] = useState({ localFolder: true, uploadedFiles: true, googleDrive: true, oneDrive: true });
   const [coworkRunning, setCoworkRunning] = useState(false);
   const [coworkResult, setCoworkResult] = useState(null);
+  const [discoveringPainpoints, setDiscoveringPainpoints] = useState({});
+  const [viewingPhoto, setViewingPhoto] = useState(null);
+  const [highlightedSection, setHighlightedSection] = useState(null);
+  const [activeAiField, setActiveAiField] = useState(null);
 
   // Refs for click outside handling
   const demographyRef = useRef(null);
   const geographyRef = useRef(null);
+  const competitorsAutoFilled = useRef(false);
+  const prdContentRef = useRef(null);
 
   // Icon mapping
   const iconComponents = { Sparkles, Rocket, Palette, FileText };
@@ -230,6 +237,27 @@ export default function PRDGenerator() {
     }
   }, [formData.usePreviousTechStack]);
 
+  // Auto-populate competitors when entering Step 1 with app name available
+  useEffect(() => {
+    if (
+      currentStep === 1 &&
+      !competitorsAutoFilled.current &&
+      aiConfigured &&
+      formData.appName &&
+      formData.competitors.every(c => !c.name)
+    ) {
+      competitorsAutoFilled.current = true;
+      showNotification('Discovering competitors for ' + formData.appName + '...', 'info');
+      (async () => {
+        const result = await discoverCompetitors(formData.appName, formData.appIdea || '', formData.targetAudienceDemography);
+        if (result.success && result.data) {
+          handleInputChange('competitors', result.data);
+          showNotification('Competitors auto-discovered for ' + formData.appName);
+        }
+      })();
+    }
+  }, [currentStep, aiConfigured, formData.appName]);
+
   // Filter functions
   const filteredDemography = DEMOGRAPHY_OPTIONS.filter(opt =>
     opt.toLowerCase().includes(demographySearch.toLowerCase()) &&
@@ -286,8 +314,25 @@ export default function PRDGenerator() {
     try {
       const convertedFiles = await filesToBase64(files);
       const field = type === 'photos' ? 'uploadedPhotos' : 'uploadedFiles';
-      handleInputChange(field, [...formData[field], ...convertedFiles]);
-      showNotification(`${convertedFiles.length} file(s) uploaded successfully`);
+
+      if (type === 'photos') {
+        const remaining = 4 - formData.uploadedPhotos.length;
+        if (remaining <= 0) {
+          showNotification('Maximum 4 photos allowed', 'error');
+          event.target.value = '';
+          return;
+        }
+        const limited = convertedFiles.slice(0, remaining);
+        handleInputChange(field, [...formData[field], ...limited]);
+        if (convertedFiles.length > remaining) {
+          showNotification(`${limited.length} photo(s) uploaded (max 4 reached)`);
+        } else {
+          showNotification(`${limited.length} photo(s) uploaded successfully`);
+        }
+      } else {
+        handleInputChange(field, [...formData[field], ...convertedFiles]);
+        showNotification(`${convertedFiles.length} file(s) uploaded successfully`);
+      }
 
       // AI auto-fill: analyze uploaded files for PRD-relevant content (only for document uploads)
       if (type === 'files' && aiConfigured) {
@@ -341,7 +386,7 @@ export default function PRDGenerator() {
   const handleTemplateApply = () => {
     const filledTemplate = APP_IDEA_TEMPLATE
       .replace('[App Name]', formData.appName || 'Your App')
-      .replace('[platform type]', formData.platform || 'application')
+      .replace('[platform type]', (formData.platform || []).join(', ') || 'application')
       .replace('[target audience]', formData.targetAudienceDemography[0] || 'users')
       .replace('[primary function]', 'solve specific problems');
 
@@ -357,6 +402,7 @@ export default function PRDGenerator() {
       return;
     }
 
+    setActiveAiField(field);
     let result;
     switch (field) {
       case 'problemStatement':
@@ -366,7 +412,7 @@ export default function PRDGenerator() {
         result = await enhanceGoal(formData.goal, formData.appName, formData.problemStatement);
         break;
       case 'outOfScope':
-        result = await suggestOutOfScope(formData.appName, formData.appIdea, formData.platform);
+        result = await suggestOutOfScope(formData.appName, formData.appIdea, (formData.platform || []).join(', '));
         break;
       case 'chartGuidelines':
         result = await suggestChartGuidelines(formData.primaryColor, formData.secondaryColor);
@@ -375,8 +421,10 @@ export default function PRDGenerator() {
         result = await suggestImageGuidelines(formData.imageBorderRadius, formData.imageAspectRatio);
         break;
       default:
+        setActiveAiField(null);
         return;
     }
+    setActiveAiField(null);
 
     if (result.success) {
       setPendingChanges({ field, originalValue: formData[field], newValue: result.data });
@@ -392,8 +440,9 @@ export default function PRDGenerator() {
       setShowSettingsDialog(true);
       return;
     }
-
-    const result = await recommendAPIs(formData.appName, formData.appIdea, formData.platform, formData.selectedTechStack);
+    setActiveAiField('techStack');
+    const result = await recommendAPIs(formData.appName, formData.appIdea, (formData.platform || []).join(', '), formData.selectedTechStack);
+    setActiveAiField(null);
 
     if (result.success && result.data) {
       const updated = { ...formData.selectedTechStack };
@@ -422,14 +471,43 @@ export default function PRDGenerator() {
       setShowSettingsDialog(true);
       return;
     }
-
+    setActiveAiField('competitors');
     const result = await discoverCompetitors(formData.appName, formData.appIdea, formData.targetAudienceDemography);
+    setActiveAiField(null);
 
     if (result.success && result.data) {
       handleInputChange('competitors', result.data);
       showNotification('Competitors discovered');
     } else {
       showNotification(result.error || 'Failed to discover competitors', 'error');
+    }
+  };
+
+  // Discover pain points for a single competitor from review sites
+  const aiDiscoverPainpoints = async (index) => {
+    if (!aiConfigured) {
+      setShowSettingsDialog(true);
+      return;
+    }
+    const comp = formData.competitors[index];
+    if (!comp.name) {
+      showNotification('Enter a competitor name first', 'error');
+      return;
+    }
+    setDiscoveringPainpoints(prev => ({ ...prev, [index]: true }));
+    const result = await discoverCompetitorPainpoints(comp.name, formData.appName, formData.appIdea);
+    setDiscoveringPainpoints(prev => ({ ...prev, [index]: false }));
+    if (result.success && result.data) {
+      const updated = [...formData.competitors];
+      updated[index] = {
+        ...updated[index],
+        url: result.data.url || updated[index].url,
+        analysis: result.data.painPoints || ''
+      };
+      handleInputChange('competitors', updated);
+      showNotification(`Pain points discovered for ${comp.name}`);
+    } else {
+      showNotification(result.error || 'Failed to discover pain points', 'error');
     }
   };
 
@@ -473,9 +551,15 @@ export default function PRDGenerator() {
     prdPromptTemplate: 'PRD Prompt'
   };
 
-  // Update competitor
+  // Update competitor — clear url/analysis when name is edited by user
   const updateCompetitor = (index, field, value) => {
-    handleArrayItemUpdate('competitors', index, field, value);
+    if (field === 'name') {
+      const updated = [...formData.competitors];
+      updated[index] = { ...updated[index], name: value, url: '', analysis: '' };
+      handleInputChange('competitors', updated);
+    } else {
+      handleArrayItemUpdate('competitors', index, field, value);
+    }
   };
 
   // Milestone handlers
@@ -504,7 +588,9 @@ export default function PRDGenerator() {
       return;
     }
 
+    setActiveAiField('generatePRD');
     const result = await generatePRDFromAI(formData);
+    setActiveAiField(null);
 
     if (result.success) {
       handleInputChange('generatedPRD', result.data);
@@ -517,7 +603,9 @@ export default function PRDGenerator() {
 
   // Generate Proposal
   const generateProposal = async (template) => {
+    setActiveAiField('proposal');
     const result = await generateProposalCoverLetter(formData, template);
+    setActiveAiField(null);
 
     if (result.success) {
       setGeneratedProposalContent(prev => ({
@@ -568,6 +656,26 @@ export default function PRDGenerator() {
       showNotification(result.error || 'Export failed', 'error');
     }
     setIsExporting(false);
+  };
+
+  // Highlight PRD section when checklist item is clicked
+  const highlightPrdSection = (searchTerm) => {
+    if (!formData.generatedPRD || !prdContentRef.current) return;
+    const text = formData.generatedPRD.toLowerCase();
+    if (!text.includes(searchTerm.toLowerCase())) {
+      showNotification(`"${searchTerm}" not found in PRD`, 'error');
+      return;
+    }
+    setHighlightedSection(searchTerm);
+    // Wait for re-render so the highlighted span with data-highlight exists, then scroll to it
+    setTimeout(() => {
+      const el = prdContentRef.current?.querySelector('[data-highlight="true"]');
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 50);
+    // Clear highlight after 10 seconds
+    setTimeout(() => setHighlightedSection(null), 10000);
   };
 
   // Send to team via email
@@ -805,7 +913,8 @@ export default function PRDGenerator() {
                           } else if (result.data.relevantCount > 0) {
                             setPendingFileFields(result.data.fields);
                             setShowFileAnalysisDialog(true);
-                            showNotification(`Cowork scanned ${result.data.scannedCount} files — ${result.data.relevantCount} field${result.data.relevantCount > 1 ? 's' : ''} found`, 'info');
+                            const fileNames = (result.data.scannedFiles || []).map(f => f.name).join(', ');
+                            showNotification(`Cowork scanned ${result.data.scannedCount} files (${fileNames}) — ${result.data.relevantCount} field${result.data.relevantCount > 1 ? 's' : ''} found`, 'info');
                           } else {
                             showNotification(`Scanned ${result.data.scannedCount} files — no relevant PRD info found`, 'info');
                           }
@@ -1097,8 +1206,10 @@ export default function PRDGenerator() {
                 showNotification('Please enter App Name or App Idea first', 'error');
                 return;
               }
+              setActiveAiField('prdPrompt');
               const basePrompt = formData.prdPromptTemplate || DEFAULT_PRD_PROMPT;
               const result = await enhancePrdPrompt(basePrompt, formData.appName, formData.appIdea);
+              setActiveAiField(null);
               if (result.success && result.data) {
                 handleInputChange('prdPromptTemplate', result.data.substring(0, 1150));
                 showNotification('PRD prompt enhanced with AI');
@@ -1106,10 +1217,10 @@ export default function PRDGenerator() {
                 showNotification(result.error || 'Failed to enhance prompt', 'error');
               }
             }}
-            disabled={aiEnhancing}
+            disabled={activeAiField === 'prdPrompt'}
             className="flex items-center px-5 py-2.5 bg-gradient-to-r from-blue-500 to-cyan-500 text-white font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
           >
-            {aiEnhancing ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Wand2 size={16} className="mr-2" />}
+            {activeAiField === 'prdPrompt' ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Wand2 size={16} className="mr-2" />}
             AI Enhance
           </button>
         </div>
@@ -1217,10 +1328,10 @@ export default function PRDGenerator() {
           </label>
           <button
             onClick={() => aiEnhanceField('problemStatement')}
-            disabled={aiEnhancing}
+            disabled={activeAiField === 'problemStatement'}
             className="flex items-center px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
           >
-            {aiEnhancing ? <Loader2 size={14} className="mr-2 animate-spin" /> : <Sparkles size={14} className="mr-2" />}
+            {activeAiField === 'problemStatement' ? <Loader2 size={14} className="mr-2 animate-spin" /> : <Sparkles size={14} className="mr-2" />}
             AI Enhance
           </button>
         </div>
@@ -1243,10 +1354,10 @@ export default function PRDGenerator() {
           </label>
           <button
             onClick={() => aiEnhanceField('goal')}
-            disabled={aiEnhancing}
+            disabled={activeAiField === 'goal'}
             className="flex items-center px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
           >
-            {aiEnhancing ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Wand2 size={16} className="mr-2" />}
+            {activeAiField === 'goal' ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Wand2 size={16} className="mr-2" />}
             AI Enhance
           </button>
         </div>
@@ -1259,11 +1370,37 @@ export default function PRDGenerator() {
         />
       </div>
 
+      {/* Out of Scope */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <label className="flex items-center text-base font-bold text-gray-800">
+            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">5</span>
+            Out of Scope
+            <HelpTooltip text={HELP_TEXTS.outOfScope} />
+          </label>
+          <button
+            onClick={() => aiEnhanceField('outOfScope')}
+            disabled={activeAiField === 'outOfScope'}
+            className="flex items-center px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
+          >
+            {activeAiField === 'outOfScope' ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Wand2 size={16} className="mr-2" />}
+            AI Enhance
+          </button>
+        </div>
+        <textarea
+          value={formData.outOfScope}
+          onChange={(e) => handleInputChange('outOfScope', e.target.value)}
+          className="w-full px-5 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all resize-none"
+          rows="4"
+          placeholder="Features excluded from v1.0..."
+        />
+      </div>
+
       {/* Target Audience */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div ref={demographyRef}>
           <label className="flex items-center text-base font-bold text-gray-800 mb-3">
-            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">5a</span>
+            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">6a</span>
             Target Demography (Max 3)
             <HelpTooltip text={HELP_TEXTS.demography} />
           </label>
@@ -1307,7 +1444,7 @@ export default function PRDGenerator() {
 
         <div ref={geographyRef}>
           <label className="flex items-center text-base font-bold text-gray-800 mb-3">
-            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">5b</span>
+            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">6b</span>
             Target Geography (Max 3)
             <HelpTooltip text={HELP_TEXTS.geography} />
           </label>
@@ -1348,32 +1485,6 @@ export default function PRDGenerator() {
             </div>
           )}
         </div>
-      </div>
-
-      {/* Out of Scope */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <label className="flex items-center text-base font-bold text-gray-800">
-            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">6</span>
-            Out of Scope
-            <HelpTooltip text={HELP_TEXTS.outOfScope} />
-          </label>
-          <button
-            onClick={() => aiEnhanceField('outOfScope')}
-            disabled={aiEnhancing}
-            className="flex items-center px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
-          >
-            {aiEnhancing ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Wand2 size={16} className="mr-2" />}
-            AI Enhance
-          </button>
-        </div>
-        <textarea
-          value={formData.outOfScope}
-          onChange={(e) => handleInputChange('outOfScope', e.target.value)}
-          className="w-full px-5 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all resize-none"
-          rows="4"
-          placeholder="Features excluded from v1.0..."
-        />
       </div>
 
       {/* Timeline & Project Details */}
@@ -1470,14 +1581,20 @@ export default function PRDGenerator() {
           {PLATFORM_OPTIONS.map((option) => (
             <button
               key={option.name}
-              onClick={() => handleInputChange('platform', option.name)}
-              className={`px-3 py-2 rounded-lg border-2 font-bold text-xs transition-all ${formData.platform === option.name
+              onClick={() => {
+                const current = formData.platform || [];
+                const updated = current.includes(option.name)
+                  ? current.filter(p => p !== option.name)
+                  : [...current, option.name];
+                handleInputChange('platform', updated);
+              }}
+              className={`px-3 py-2 rounded-lg border-2 font-bold text-xs transition-all ${(formData.platform || []).includes(option.name)
                   ? 'border-blue-500 bg-gradient-to-br from-blue-50 to-cyan-50 shadow-md scale-105'
                   : 'border-gray-200 bg-white hover:border-blue-300'
                 }`}
             >
               <div className="text-lg leading-none mb-0.5">{option.emoji}</div>
-              <div className={`leading-tight ${formData.platform === option.name ? 'text-blue-700' : 'text-gray-700'}`}>
+              <div className={`leading-tight ${(formData.platform || []).includes(option.name) ? 'text-blue-700' : 'text-gray-700'}`}>
                 {option.name}
               </div>
               <div className="text-[10px] text-gray-400 leading-tight">{option.sub}</div>
@@ -1571,10 +1688,10 @@ export default function PRDGenerator() {
             </label>
             <button
               onClick={aiRecommendAPIs}
-              disabled={aiEnhancing}
+              disabled={activeAiField === 'techStack'}
               className="px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
             >
-              {aiEnhancing ? <Loader2 size={14} className="inline mr-2 animate-spin" /> : <Wand2 size={14} className="inline mr-2" />}
+              {activeAiField === 'techStack' ? <Loader2 size={14} className="inline mr-2 animate-spin" /> : <Wand2 size={14} className="inline mr-2" />}
               AI Recommend
             </button>
           </div>
@@ -1628,39 +1745,49 @@ export default function PRDGenerator() {
           </label>
           <button
             onClick={aiDiscoverCompetitors}
-            disabled={aiEnhancing}
+            disabled={activeAiField === 'competitors'}
             className="px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
           >
-            {aiEnhancing ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Wand2 size={16} className="mr-2" />}
-            Discover & Analyze
+            {activeAiField === 'competitors' ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Wand2 size={16} className="mr-2" />}
+            AI Enhance
           </button>
         </div>
 
         <div className="space-y-4">
           {formData.competitors.map((comp, idx) => (
             <div key={idx} className="bg-white p-4 rounded-lg border border-blue-200">
-              <div className="grid grid-cols-2 gap-3 mb-2">
+              <div className="flex items-center gap-3 mb-2">
                 <input
                   type="text"
                   value={comp.name}
                   onChange={(e) => updateCompetitor(idx, 'name', e.target.value)}
-                  className="px-3 py-2 border border-gray-300 rounded text-sm font-semibold"
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded text-sm font-semibold"
                   placeholder={`Competitor ${idx + 1}`}
                 />
                 <input
                   type="text"
                   value={comp.url}
                   onChange={(e) => updateCompetitor(idx, 'url', e.target.value)}
-                  className="px-3 py-2 border border-gray-300 rounded text-sm"
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded text-sm"
                   placeholder="URL"
+                  readOnly
                 />
+                <button
+                  onClick={() => aiDiscoverPainpoints(idx)}
+                  disabled={activeAiField !== null || discoveringPainpoints[idx] || !comp.name}
+                  className="px-3 py-2 bg-gradient-to-r from-orange-500 to-amber-500 text-white text-xs font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50 whitespace-nowrap"
+                  title="Extract pain points from G2, TrustRadius & SourceForge"
+                >
+                  {discoveringPainpoints[idx] ? <Loader2 size={14} className="inline mr-1 animate-spin" /> : <Search size={14} className="inline mr-1" />}
+                  Discover
+                </button>
               </div>
               <textarea
                 value={comp.analysis}
                 onChange={(e) => updateCompetitor(idx, 'analysis', e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded text-sm resize-none"
-                rows="2"
-                placeholder="Analysis..."
+                rows={comp.analysis && comp.analysis.includes('G2') ? 8 : 2}
+                placeholder="Analysis — click Discover to extract pain points from G2, TrustRadius & SourceForge..."
               />
             </div>
           ))}
@@ -1672,15 +1799,8 @@ export default function PRDGenerator() {
   // Step 2: Visual Style Guide (continued in next part due to length)
   const renderStep2 = () => (
     <div className="space-y-8 bg-blue-50 p-6 rounded-2xl">
-      {/* Removed Visual Style Guide intro box per image reference */}
-      <div className="border-b-2 border-blue-200 pb-4 mb-6">
-        <h3 className="text-2xl font-bold text-blue-900">Visual Style Guide</h3>
-        <p className="text-blue-700 text-sm mt-1">Define your application's complete visual identity</p>
-      </div>
-
       {/* Complete Style Preview - Moved to Top */}
       <div className="bg-white p-8 rounded-2xl border-2 border-gray-200 shadow-lg">
-        <div className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-6">Complete Style Preview</div>
         <div className="space-y-6">
           <div>
             <h1 style={{ fontFamily: formData.headingsFont, fontSize: formData.h1Size }} className="font-bold text-gray-900 mb-2">
@@ -1745,21 +1865,8 @@ export default function PRDGenerator() {
           </label>
         </div>
         {formData.uploadedPhotos.length > 0 && (
-          <div className="mt-3">
-            <div className="text-sm text-gray-600 mb-2">{formData.uploadedPhotos.length} photo(s) uploaded</div>
-            <div className="flex gap-2 flex-wrap">
-              {formData.uploadedPhotos.map((photo, idx) => (
-                <div key={photo.id} className="relative group">
-                  <img src={photo.base64} alt={photo.name} className="w-16 h-16 object-cover rounded" />
-                  <button
-                    onClick={() => removeFile('uploadedPhotos', idx)}
-                    className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100"
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-            </div>
+          <div className="mt-2">
+            <div className="text-sm text-gray-500">{formData.uploadedPhotos.length} photo(s) uploaded — visible in Visual Examples below</div>
           </div>
         )}
       </div>
@@ -1826,23 +1933,33 @@ export default function PRDGenerator() {
         <div className="grid grid-cols-2 gap-5">
           <div className="bg-gradient-to-br from-blue-50 to-cyan-50 p-6 rounded-xl border-2 border-blue-200">
             <label className="block text-sm font-bold text-blue-900 mb-3">Body Font</label>
-            <select
-              value={formData.primaryFont}
-              onChange={(e) => handleInputChange('primaryFont', e.target.value)}
-              className="w-full px-4 py-3 bg-white border-2 border-blue-200 rounded-lg outline-none"
-            >
-              {FONT_OPTIONS.map(font => <option key={font} value={font}>{font}</option>)}
-            </select>
+            <div className="flex items-center gap-4">
+              <select
+                value={formData.primaryFont}
+                onChange={(e) => handleInputChange('primaryFont', e.target.value)}
+                className="w-48 px-4 py-3 bg-white border-2 border-blue-200 rounded-lg outline-none"
+              >
+                {FONT_OPTIONS.map(font => <option key={font} value={font}>{font}</option>)}
+              </select>
+              <div className="px-3 py-3 bg-white border-2 border-gray-200 rounded-lg text-gray-700 whitespace-nowrap" style={{ fontFamily: formData.primaryFont }}>
+                BuLLM Coding System
+              </div>
+            </div>
           </div>
           <div className="bg-gradient-to-br from-blue-50 to-cyan-50 p-6 rounded-xl border-2 border-blue-200">
             <label className="block text-sm font-bold text-blue-900 mb-3">Heading Font</label>
-            <select
-              value={formData.headingsFont}
-              onChange={(e) => handleInputChange('headingsFont', e.target.value)}
-              className="w-full px-4 py-3 bg-white border-2 border-blue-200 rounded-lg outline-none"
-            >
-              {FONT_OPTIONS.map(font => <option key={font} value={font}>{font}</option>)}
-            </select>
+            <div className="flex items-center gap-4">
+              <select
+                value={formData.headingsFont}
+                onChange={(e) => handleInputChange('headingsFont', e.target.value)}
+                className="w-48 px-4 py-3 bg-white border-2 border-blue-200 rounded-lg outline-none"
+              >
+                {FONT_OPTIONS.map(font => <option key={font} value={font}>{font}</option>)}
+              </select>
+              <div className="px-3 py-3 bg-white border-2 border-gray-200 rounded-lg text-gray-700 font-bold whitespace-nowrap" style={{ fontFamily: formData.headingsFont }}>
+                BuLLM Coding System
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1885,7 +2002,7 @@ export default function PRDGenerator() {
                   }}
                 >
                   <Eye size={14} className="inline mr-2 text-gray-400" />
-                  Preview
+                  DigiBull AI
                 </div>
               </div>
             ))}
@@ -1927,10 +2044,10 @@ export default function PRDGenerator() {
                 <label className="text-sm font-semibold text-gray-700">Guidelines</label>
                 <button
                   onClick={() => aiEnhanceField('chartGuidelines')}
-                  disabled={aiEnhancing}
+                  disabled={activeAiField === 'chartGuidelines'}
                   className="text-xs px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
                 >
-                  {aiEnhancing ? 'Processing...' : 'AI Enhance'}
+                  {activeAiField === 'chartGuidelines' ? 'Processing...' : 'AI Enhance'}
                 </button>
               </div>
               <textarea
@@ -2007,10 +2124,10 @@ export default function PRDGenerator() {
               <label className="text-sm font-semibold text-gray-700">Image Treatment</label>
               <button
                 onClick={() => aiEnhanceField('imageGuidelines')}
-                disabled={aiEnhancing}
+                disabled={activeAiField === 'imageGuidelines'}
                 className="text-xs px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
               >
-                {aiEnhancing ? 'Processing...' : 'AI Enhance'}
+                {activeAiField === 'imageGuidelines' ? 'Processing...' : 'AI Enhance'}
               </button>
             </div>
             <textarea
@@ -2025,16 +2142,41 @@ export default function PRDGenerator() {
           <div className="bg-white p-5 rounded-xl border-2 border-gray-200">
             <div className="text-sm font-semibold text-gray-700 mb-3">Visual Examples</div>
             <div className="grid grid-cols-2 gap-3">
-              {['from-blue-200 to-cyan-300', 'from-blue-200 to-cyan-300', 'from-purple-200 to-pink-300', 'from-green-200 to-teal-300'].map((gradient, idx) => (
-                <div
-                  key={idx}
-                  className={`h-20 bg-gradient-to-br ${gradient}`}
-                  style={{ borderRadius: formData.imageBorderRadius }}
-                />
-              ))}
+              {(formData.uploadedPhotos.length > 0
+                ? formData.uploadedPhotos.slice(0, 4)
+                : ['from-blue-200 to-cyan-300', 'from-blue-200 to-cyan-300', 'from-purple-200 to-pink-300', 'from-green-200 to-teal-300'].map((g, i) => ({ _gradient: g, _idx: i }))
+              ).map((item, idx) =>
+                item.base64 ? (
+                  <div key={item.id || idx} className="relative group">
+                    <img
+                      src={item.base64}
+                      alt={item.name || `Photo ${idx + 1}`}
+                      className="h-20 w-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
+                      style={{ borderRadius: formData.imageBorderRadius }}
+                      onClick={() => setViewingPhoto(item)}
+                      title="Click to view"
+                    />
+                    <button
+                      onClick={() => removeFile('uploadedPhotos', idx)}
+                      className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      ×
+                    </button>
+                    <div className="absolute bottom-1 right-1 bg-black/50 text-white text-[10px] px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Eye size={10} className="inline mr-0.5" />View
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    key={idx}
+                    className={`h-20 bg-gradient-to-br ${item._gradient}`}
+                    style={{ borderRadius: formData.imageBorderRadius }}
+                  />
+                )
+              )}
             </div>
             <p className="text-xs text-gray-500 mt-3">
-              Border Radius: {formData.imageBorderRadius}
+              Border Radius: {formData.imageBorderRadius} {formData.uploadedPhotos.length > 0 ? `· ${Math.min(formData.uploadedPhotos.length, 4)} of ${formData.uploadedPhotos.length} photo(s)` : ''}
             </p>
           </div>
         </div>
@@ -2045,19 +2187,11 @@ export default function PRDGenerator() {
   // Step 3: Generate PRD
   const renderStep3 = () => (
     <div className="space-y-6 bg-blue-50 p-6 rounded-2xl">
-      <div className="bg-gradient-to-br from-blue-50 to-cyan-50 rounded-xl border-2 border-blue-200 p-6">
-        <h3 className="text-2xl font-bold text-blue-900 mb-2 flex items-center">
-          Generate Product Requirements Document
-          <HelpTooltip text="Review, generate, and distribute your comprehensive PRD following the ISTVON framework." />
-        </h3>
-        <p className="text-blue-700">Review inputs, generate PRD, create proposals, and deploy to your team</p>
-      </div>
-
-      {/* PRD Review Checklist */}
+      {/* BuLLM PRD Review Checklist */}
       <div className="bg-white rounded-xl border-2 border-gray-200 p-6">
         <h4 className="font-bold text-gray-800 mb-4 flex items-center">
           <FileCheck size={20} className="mr-2" />
-          PRD Review Checklist
+          BuLLM PRD Review Checklist
           <HelpTooltip text={HELP_TEXTS.prdReview} />
         </h4>
         <div className="grid grid-cols-5 gap-2">
@@ -2070,7 +2204,12 @@ export default function PRDGenerator() {
                 onChange={(e) => setPrdReviewChecked(prev => ({ ...prev, [item.id]: e.target.checked }))}
               />
               <div className="min-w-0">
-                <div className="text-xs font-medium text-gray-800 truncate">{item.label}</div>
+                <div
+                  className={`text-xs font-medium truncate ${formData.generatedPRD ? 'text-blue-700 hover:underline cursor-pointer' : 'text-gray-800'}`}
+                  onClick={(e) => { if (formData.generatedPRD && item.prdSearch) { e.preventDefault(); highlightPrdSection(item.prdSearch); } }}
+                >
+                  {item.label}
+                </div>
                 <div className="text-[10px] text-gray-500">{item.category}</div>
               </div>
             </label>
@@ -2090,10 +2229,10 @@ export default function PRDGenerator() {
         <div className="grid grid-cols-3 gap-4">
           <button
             onClick={generatePRD}
-            disabled={aiEnhancing}
+            disabled={activeAiField === 'generatePRD'}
             className="p-6 bg-gradient-to-br from-blue-50 to-cyan-50 border-2 border-blue-200 rounded-xl hover:shadow-lg transition-all disabled:opacity-50"
           >
-            {aiEnhancing ? (
+            {activeAiField === 'generatePRD' ? (
               <Loader2 size={32} className="mx-auto mb-3 text-blue-600 animate-spin" />
             ) : (
               <FileText size={32} className="mx-auto mb-3 text-blue-600" />
@@ -2123,7 +2262,7 @@ export default function PRDGenerator() {
               <Download size={32} className="mx-auto mb-3 text-blue-600" />
             )}
             <div className="font-bold text-blue-900 mb-1">3. Export</div>
-            <div className="text-xs text-blue-700">PDF, DOC, JSON</div>
+            <div className="text-xs text-blue-700">PDF, DOC, JSON, MD</div>
           </button>
         </div>
       </div>
@@ -2131,12 +2270,17 @@ export default function PRDGenerator() {
       {/* PRD Display */}
       {formData.generatedPRD && (
         <>
-          <div className="bg-white rounded-xl border-2 border-gray-200 p-8 relative">
+          <div className="bg-white rounded-xl border-2 border-gray-200 p-8 relative" ref={prdContentRef}>
             <div className="absolute top-4 right-4 text-xs text-gray-300 font-mono">
               ISTVON PRD Framework
             </div>
             <pre className="whitespace-pre-wrap font-sans text-sm text-gray-800 leading-relaxed">
-              {formData.generatedPRD}
+              {highlightedSection ? (() => { let found = false; return formData.generatedPRD.split('\n').map((line, i) => {
+                const isMatch = line.toLowerCase().includes(highlightedSection.toLowerCase());
+                const isFirst = isMatch && !found;
+                if (isFirst) found = true;
+                return <span key={i} className={isMatch ? 'bg-yellow-200 font-bold' : ''} {...(isFirst ? { 'data-highlight': 'true' } : {})}>{line}{'\n'}</span>;
+              }); })() : formData.generatedPRD}
             </pre>
           </div>
 
@@ -2168,6 +2312,13 @@ export default function PRDGenerator() {
                 className="px-6 py-3 bg-gray-700 text-white rounded-lg font-semibold hover:bg-gray-800 disabled:opacity-50"
               >
                 Export as JSON
+              </button>
+              <button
+                onClick={() => handleExportPRD('md')}
+                disabled={isExporting}
+                className="px-6 py-3 bg-purple-600 text-white rounded-lg font-semibold hover:bg-purple-700 disabled:opacity-50"
+              >
+                Export as MD
               </button>
             </div>
           </div>
@@ -2355,14 +2506,14 @@ export default function PRDGenerator() {
                       <button
                         key={key}
                         onClick={() => generateProposal(key)}
-                        disabled={aiEnhancing}
+                        disabled={activeAiField === 'proposal'}
                         className={`flex-1 p-4 border-2 rounded-lg transition-all disabled:opacity-50 ${
                           activeProposalTab === key && generatedProposalContent[key]
                             ? 'border-blue-500 bg-blue-50'
                             : 'border-gray-200 hover:border-blue-400 hover:bg-blue-50'
                         }`}
                       >
-                        {aiEnhancing && activeProposalTab === key ? (
+                        {activeAiField === 'proposal' && activeProposalTab === key ? (
                           <Loader2 size={20} className="mx-auto mb-2 animate-spin text-blue-500" />
                         ) : (
                           <Send size={20} className="mx-auto mb-2 text-blue-500" />
@@ -2471,6 +2622,19 @@ export default function PRDGenerator() {
         </div>
       )}
 
+      {/* Photo Viewer Modal */}
+      {viewingPhoto && (
+        <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 p-4" onClick={() => setViewingPhoto(null)}>
+          <div className="relative max-w-4xl max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+            <img src={viewingPhoto.base64} alt={viewingPhoto.name || 'Photo'} className="max-w-full max-h-[85vh] object-contain rounded-lg" />
+            <div className="absolute top-3 right-3 flex gap-2">
+              <button onClick={() => setViewingPhoto(null)} className="w-8 h-8 bg-white text-gray-800 rounded-full flex items-center justify-center shadow-lg hover:bg-gray-100 font-bold">×</button>
+            </div>
+            {viewingPhoto.name && <div className="text-center text-white text-sm mt-3 opacity-75">{viewingPhoto.name}</div>}
+          </div>
+        </div>
+      )}
+
       {/* AI Dialog */}
       {showUndoDialog && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -2529,10 +2693,31 @@ export default function PRDGenerator() {
               <p className="text-emerald-100 text-sm mt-1">Review extracted information before applying to your PRD</p>
             </div>
             <div className="p-6 max-h-96 overflow-y-auto space-y-4">
+              {coworkResult?.scannedFiles?.length > 0 && (
+                <div className="border border-blue-200 rounded-lg overflow-hidden bg-blue-50">
+                  <div className="px-4 py-2 border-b border-blue-200">
+                    <span className="font-semibold text-blue-700 text-sm">Extracted from {coworkResult.scannedFiles.length} file(s):</span>
+                  </div>
+                  <div className="px-4 py-2 flex flex-wrap gap-2">
+                    {coworkResult.scannedFiles.map((f, i) => (
+                      <span key={i} className="inline-flex items-center px-2 py-1 bg-white border border-blue-200 rounded text-xs text-gray-700">
+                        <FileText size={12} className="mr-1 text-blue-500" />
+                        {f.name}
+                        <span className="ml-1 text-[10px] text-gray-400">({f.source})</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
               {Object.entries(pendingFileFields).map(([key, value]) => (
                 <div key={key} className="border border-gray-200 rounded-lg overflow-hidden">
-                  <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                  <div className="bg-gray-50 px-4 py-2 border-b border-gray-200 flex items-center justify-between">
                     <span className="font-semibold text-gray-700 text-sm">{fieldLabels[key] || key}</span>
+                    {coworkResult?.fieldSources?.[key] && (
+                      <span className="text-[11px] text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
+                        from: {coworkResult.fieldSources[key]}
+                      </span>
+                    )}
                   </div>
                   <div className="px-4 py-3">
                     <pre className="whitespace-pre-wrap text-sm text-gray-800">{value}</pre>

@@ -22,7 +22,7 @@ Please find below the Product Requirements Document for ${formData.appName || 'o
 PROJECT OVERVIEW
 ---
 App Name: ${formData.appName}
-Platform: ${formData.platform}
+Platform: ${(formData.platform || []).join(', ')}
 Project Type: ${formData.projectType}
 Due Date: ${formData.dueDate}
 
@@ -70,7 +70,7 @@ Please find attached the Product Requirements Document for ${formData.appName ||
 
 PROJECT OVERVIEW
 - App Name: ${formData.appName}
-- Platform: ${formData.platform}
+- Platform: ${(formData.platform || []).join(', ')}
 - Due Date: ${formData.dueDate}
 - Version: ${formData.prdVersion || '1.0'}
 

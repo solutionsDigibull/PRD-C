@@ -82,6 +82,11 @@ class AIService {
     return this.callBackend('/discover-competitors', { appName, appIdea, targetAudience });
   }
 
+  // Discover competitor pain points from review sites
+  async discoverCompetitorPainpoints(competitorName, appName, appIdea) {
+    return this.callBackend('/discover-competitor-painpoints', { competitorName, appName, appIdea });
+  }
+
   // Suggest chart guidelines
   async suggestChartGuidelines(primaryColor, secondaryColor) {
     return this.callBackend('/suggest-chart-guidelines', { primaryColor, secondaryColor });
