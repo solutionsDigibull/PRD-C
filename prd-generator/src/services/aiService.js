@@ -1,7 +1,7 @@
 // AI Service for PRD Generator
 // Calls backend API which handles OpenAI/Claude integration
 
-const API_BASE_URL = 'http://localhost:5000/api/ai';
+const API_BASE_URL = process.env.REACT_APP_API_URL || '/api/ai';
 
 class AIService {
   constructor() {
