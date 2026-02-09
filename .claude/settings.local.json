@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmd //c \"xcopy prd-generator frontend\\\\ /E /I /H /Y /Q\")"
+    ]
+  }
+}
