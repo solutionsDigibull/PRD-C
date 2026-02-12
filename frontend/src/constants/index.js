@@ -169,21 +169,21 @@ export const PRD_REVIEW_CHECKLIST = [
 ];
 
 export const DOCUMENT_CHECKLIST = [
-  { id: 'app_idea', label: 'App Idea Document' },
-  { id: 'design_doc', label: 'Software Design Document' },
-  { id: 'notebooklm', label: 'NotebookLM' },
-  { id: 'storm_pdf', label: 'STORM PDF' },
-  { id: 'client_expectations', label: 'Client Expectations' },
-  { id: 'process_flow', label: 'Proposed Process Flow' },
-  { id: 'data_schema', label: 'Data schema, if available' },
-  { id: 'video_walkthrough', label: 'Video walkthrough, if done' },
-  { id: 'screenshots', label: 'Screenshots of existing tool' },
-  { id: 'legacy_code', label: 'Legacy Code' },
-  { id: 'competitive_tools', label: 'List of competitive tools & websites' },
-  { id: 'integrations_3p', label: 'Integrations with 3rd party tools' },
-  { id: 'apis', label: 'APIs' },
-  { id: 'mcps', label: 'MCPs' },
-  { id: 'integrations', label: 'Integrations' }
+  { id: 'app_idea', label: 'App Idea Doc', group: 1, keywords: ['idea', 'concept', 'vision', 'pitch', 'overview', 'brief', 'proposal', 'summary', 'about'] },
+  { id: 'client_expectations', label: 'Client Expectations', group: 1, keywords: ['client', 'expectation', 'stakeholder', 'scope'] },
+  { id: 'notebooklm', label: 'NotebookLM', group: 1, keywords: ['notebooklm', 'notebook', 'nlm'] },
+  { id: 'storm_pdf', label: 'STORM PDF', group: 1, keywords: ['storm', 'storm pdf'] },
+  { id: 'competitive_tools', label: 'Competitive Apps', group: 1, keywords: ['competitor', 'competition', 'competitive', 'market', 'benchmark', 'comparison', 'landscape'] },
+  { id: 'process_flow', label: 'Proposed Process Flow', group: 1, keywords: ['flow', 'process', 'journey', 'workflow', 'diagram', 'wireframe', 'sitemap', 'navigation', 'ux', 'ui'] },
+  { id: 'design_doc', label: 'Software Design Doc', group: 2, keywords: ['design', 'sdd', 'srs', 'brd', 'frd', 'functional', 'software design', 'spec', 'requirement'] },
+  { id: 'integrations_3p', label: '3rd Party Integrations', group: 2, keywords: ['3rd party', 'third party', 'external', 'plugin', 'addon'] },
+  { id: 'apis', label: 'APIs', group: 2, keywords: ['api', 'endpoint', 'rest', 'graphql', 'swagger', 'openapi'] },
+  { id: 'mcps', label: 'MCPs', group: 2, keywords: ['mcp', 'model context'] },
+  { id: 'data_schema', label: 'Data Schema', group: 2, keywords: ['schema', 'data', 'database', 'erd', 'model', 'entity', 'table', 'sql', 'migration'] },
+  { id: 'legacy_code', label: 'Legacy Code', group: 2, keywords: ['legacy', 'code', 'source', 'codebase', 'repo'] },
+  { id: 'hw_requirements', label: 'HW Requirements', group: 2, keywords: ['hardware', 'hw', 'device', 'iot', 'sensor', 'embedded', 'peripheral'] },
+  { id: 'video_walkthrough', label: 'Video Walkthrough', group: 3, keywords: ['video', 'walkthrough', 'demo', 'recording', 'screencast', 'mp4', 'mov', 'webm'] },
+  { id: 'screenshots', label: 'Screenshots', group: 3, keywords: ['screenshot', 'screen', 'capture', 'snapshot', 'existing tool', 'png', 'jpg', 'jpeg'] }
 ];
 
 export const TECH_STACK_OPTIONS = {

@@ -112,6 +112,11 @@ export const useAI = () => {
     return executeAI(() => aiService.coworkFetch(payload));
   }, [executeAI]);
 
+  // Generate UI preview templates
+  const generateUITemplates = useCallback(async (appName, appIdea, platform, targetAudienceDemography, numberOfUsers, appStructure, selectedTechStack) => {
+    return executeAI(() => aiService.generateUITemplates(appName, appIdea, platform, targetAudienceDemography, numberOfUsers, appStructure, selectedTechStack));
+  }, [executeAI]);
+
   // Refresh backend status
   const refreshStatus = useCallback(async () => {
     const status = await aiService.checkStatus();
@@ -149,6 +154,7 @@ export const useAI = () => {
     analyzeUploadedFiles,
     analyzeDriveLink,
     coworkFetch,
+    generateUITemplates,
 
     // Utilities
     clearError,

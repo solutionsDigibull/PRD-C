@@ -126,6 +126,11 @@ class AIService {
   async coworkFetch(payload) {
     return this.callBackend('/cowork-fetch', payload);
   }
+
+  // Generate UI preview templates
+  async generateUITemplates(appName, appIdea, platform, targetAudienceDemography, numberOfUsers, appStructure, selectedTechStack) {
+    return this.callBackend('/generate-ui-templates', { appName, appIdea, platform, targetAudienceDemography, numberOfUsers, appStructure, selectedTechStack });
+  }
 }
 
 // Export singleton instance

@@ -1353,4 +1353,77 @@ Return ONLY the raw JSON object. No markdown, no code blocks, no explanation.`;
   }
 });
 
+// Generate UI preview templates based on app concept and platform
+router.post('/generate-ui-templates', async (req, res, next) => {
+  try {
+    const { appName, appIdea, platform, targetAudienceDemography, numberOfUsers, appStructure, selectedTechStack } = req.body;
+
+    const platformStr = (platform || []).join(', ') || 'Web App';
+    const audienceStr = (targetAudienceDemography || []).join(', ') || 'general users';
+    const defaultScreen = appStructure?.defaultScreen || '';
+    const workingScreen = appStructure?.workingScreen || '';
+    const otherScreens = appStructure?.otherScreens || '';
+
+    const prompt = `Generate exactly 3 UI preview templates for an application with these details:
+
+App Name: ${appName || 'Untitled App'}
+App Idea: ${appIdea || 'Not specified'}
+Platform: ${platformStr}
+Target Audience: ${audienceStr}
+Expected Users: ${numberOfUsers || 'Not specified'}
+Default Screen: ${defaultScreen || 'Not specified'}
+Working Screen: ${workingScreen || 'Not specified'}
+Other Screens: ${otherScreens || 'Not specified'}
+
+For each template, provide:
+1. templateName: A creative, descriptive name (e.g., "Executive Dashboard Pro", "Minimal Kanban Workspace")
+2. layoutType: One of these exact values: "dashboard", "kanban", "landing", "mobile", "admin", "analytics"
+3. screens: Array of 3 screen objects, each with:
+   - name: Screen name
+   - type: One of "hero", "dashboard", "list", "detail", "form", "settings", "analytics", "kanban", "chat", "profile", "calendar", "table"
+   - sections: Array of 3-5 section descriptions (brief, 5-10 words each)
+4. components: Array of 5-7 primary UI components used (e.g., "Sidebar Navigation", "Data Cards Grid", "Search Bar", "Status Badges")
+5. bestFit: One sentence explaining why this template suits the app (max 120 chars)
+6. colorAccent: A suggested accent style: "cool" (blues/greens), "warm" (oranges/reds), or "neutral" (grays/slate)
+7. imageQueries: Array of exactly 3 short image search keywords (1-2 words each) that visually represent the app's domain and purpose. These will be used to fetch relevant stock photos. Examples: for a fitness app use ["fitness workout", "healthy food", "running athlete"], for a project management tool use ["team workspace", "kanban board", "office meeting"]. Make them specific and visual.
+
+Make each template distinctly different in layout approach. One should be data-heavy, one should be clean/minimal, and one should be feature-rich. Ensure they match the platform type (mobile layouts for mobile apps, admin panels for enterprise, etc.).
+
+Return ONLY valid JSON in this exact format:
+{
+  "templates": [
+    {
+      "templateName": "...",
+      "layoutType": "...",
+      "screens": [
+        { "name": "...", "type": "...", "sections": ["...", "...", "..."] }
+      ],
+      "components": ["...", "..."],
+      "bestFit": "...",
+      "colorAccent": "cool",
+      "imageQueries": ["keyword1", "keyword2", "keyword3"]
+    }
+  ]
+}`;
+
+    const result = await callAI(prompt, 'You are a senior UI/UX designer. Return only valid JSON, no markdown or explanation.');
+
+    let parsed;
+    try {
+      parsed = JSON.parse(result);
+    } catch {
+      const jsonMatch = result.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        parsed = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error('Failed to parse AI response');
+      }
+    }
+
+    res.json({ success: true, data: parsed.templates || parsed });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

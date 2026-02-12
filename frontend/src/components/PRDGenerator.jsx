@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowRight, ArrowLeft, Sparkles, Rocket, Palette, FileText, Wand2, Upload, Check, X, Search, Link, FolderArchive, Users, Send, Info, Download, Camera, Eye, CheckCircle2, FileCheck, Settings, AlertCircle, Loader2, RefreshCw, FolderSearch, Play } from 'lucide-react';
+import { ArrowRight, ArrowLeft, Sparkles, Rocket, Palette, FileText, Wand2, Upload, Check, X, Search, Link, FolderArchive, Users, Send, Info, Download, Camera, Eye, CheckCircle2, FileCheck, Settings, AlertCircle, Loader2, RefreshCw, FolderSearch, Play, ChevronDown, ChevronUp } from 'lucide-react';
 
 // Import hooks and utilities
 import { useFormData, useAI } from '../hooks';
 import { calculateContrast } from '../utils/colorUtils';
 import { filesToBase64, isImage, formatFileSize, getFileIcon } from '../utils/fileUtils';
-import { exportPRD } from '../utils/exportUtils';
+import { exportPRD, exportToPDF, exportToDOCX, downloadBlob } from '../utils/exportUtils';
 import { sendPRDViaEmail, isValidEmail } from '../utils/emailUtils';
 import * as XLSX from 'xlsx-js-style';
 import { generateExcelTemplate, parseExcelToFormData } from '../utils/excelUtils';
@@ -136,6 +136,7 @@ export default function PRDGenerator() {
     analyzeUploadedFiles,
     analyzeDriveLink,
     coworkFetch,
+    generateUITemplates,
     clearError,
     refreshStatus
   } = useAI();
@@ -174,6 +175,10 @@ export default function PRDGenerator() {
   const [viewingPhoto, setViewingPhoto] = useState(null);
   const [highlightedSection, setHighlightedSection] = useState(null);
   const [activeAiField, setActiveAiField] = useState(null);
+  const [uiTemplates, setUiTemplates] = useState(null);
+  const [generatingTemplates, setGeneratingTemplates] = useState(false);
+  const [selectedTemplateIdx, setSelectedTemplateIdx] = useState(null);
+  const [templatesMinimized, setTemplatesMinimized] = useState(false);
 
   // Refs for click outside handling
   const demographyRef = useRef(null);
@@ -389,6 +394,35 @@ export default function PRDGenerator() {
     }
 
     event.target.value = '';
+  };
+
+  // Generate UI preview templates
+  const handleGenerateUITemplates = async () => {
+    if (!aiConfigured) {
+      setShowSettingsDialog(true);
+      return;
+    }
+    if (!formData.appName && !formData.appIdea) {
+      showNotification('Add an App Name or App Idea in Step 1 first', 'error');
+      return;
+    }
+    setGeneratingTemplates(true);
+    try {
+      const result = await generateUITemplates(
+        formData.appName, formData.appIdea, formData.platform,
+        formData.targetAudienceDemography, formData.numberOfUsers,
+        formData.appStructure, formData.selectedTechStack
+      );
+      if (result.success && result.data) {
+        setUiTemplates(Array.isArray(result.data) ? result.data : result.data.templates || []);
+        showNotification('UI templates generated — scroll down to preview');
+      } else {
+        showNotification(result.error || 'Failed to generate UI templates', 'error');
+      }
+    } catch {
+      showNotification('Error generating UI templates', 'error');
+    }
+    setGeneratingTemplates(false);
   };
 
   // Download Excel template
@@ -803,6 +837,10 @@ export default function PRDGenerator() {
 
   // Navigation
   const nextStep = () => {
+    if (currentStep === 0 && !formData.appIdea.trim()) {
+      showNotification('App Idea is required before proceeding', 'error');
+      return;
+    }
     if (currentStep < STEPS.length - 1) {
       forceSave();
       setCurrentStep(currentStep + 1);
@@ -811,6 +849,108 @@ export default function PRDGenerator() {
 
   const prevStep = () => {
     if (currentStep > 0) setCurrentStep(currentStep - 1);
+  };
+
+  // Generate Scope of Work markdown content
+  const generateScopeOfWorkContent = () => {
+    const lines = [];
+    lines.push('# Scope of Work');
+    lines.push(`**${formData.appName || 'Untitled App'}** | Generated ${new Date().toLocaleDateString()}`);
+    lines.push('---\n');
+
+    lines.push('## 1. App Concept');
+    if (formData.appName) lines.push(`**App Name:** ${formData.appName}`);
+    if (formData.appIdea) lines.push(`**App Idea:** ${formData.appIdea}`);
+    if (formData.problemStatement) lines.push(`**Problem Statement:** ${formData.problemStatement}`);
+    if (formData.mainGoal) lines.push(`**Main Goal:** ${formData.mainGoal}`);
+    lines.push('');
+
+    lines.push('## 2. App Description');
+    if (formData.appDescription) lines.push(formData.appDescription);
+    lines.push('');
+
+    lines.push('## 3. Scope');
+    if (formData.inScope) lines.push(`**In Scope:**\n${formData.inScope}`);
+    if (formData.outOfScope) lines.push(`**Out of Scope:**\n${formData.outOfScope}`);
+    lines.push('');
+
+    if (formData.uploadedFiles.length > 0) {
+      lines.push('## 4. Uploaded Documents');
+      formData.uploadedFiles.forEach(f => lines.push(`- ${f.name} (${(f.size / 1024).toFixed(1)} KB)`));
+      lines.push('');
+    }
+
+    if (formData.googleDriveLink || formData.oneDriveLink) {
+      lines.push('## External Links');
+      if (formData.googleDriveLink) lines.push(`- **Google Drive:** ${formData.googleDriveLink}`);
+      if (formData.oneDriveLink) lines.push(`- **OneDrive:** ${formData.oneDriveLink}`);
+      lines.push('');
+    }
+
+    if (formData.projectType || formData.dueDate || formData.milestones?.length > 0) {
+      lines.push('## Timeline & Project Details');
+      if (formData.projectType) lines.push(`**Project Type:** ${formData.projectType}`);
+      if (formData.dueDate) lines.push(`**Due Date:** ${formData.dueDate}`);
+      if (formData.milestones?.length > 0) {
+        lines.push('**Milestones:**');
+        formData.milestones.forEach(m => lines.push(`- ${m.name}${m.date ? ` (${m.date})` : ''}${m.description ? ` — ${m.description}` : ''}`));
+      }
+      lines.push('');
+    }
+
+    if (formData.prdPromptTemplate) {
+      lines.push('## BuLLMake PRD Prompt');
+      lines.push(formData.prdPromptTemplate);
+      lines.push('');
+    }
+
+    if (formData.istvonData && Object.values(formData.istvonData).some(v => v)) {
+      lines.push('## ISTVON Framework');
+      ISTVON_SECTIONS.forEach(section => {
+        const filled = section.fields.filter(f => formData.istvonData[f.key]);
+        if (filled.length > 0) {
+          lines.push(`### ${section.letter} - ${section.title}`);
+          filled.forEach(f => lines.push(`- **${f.label}:** ${formData.istvonData[f.key]}`));
+          lines.push('');
+        }
+      });
+    }
+
+    if (formData.demography?.length > 0) {
+      lines.push('## Target Demography');
+      lines.push(formData.demography.join(', '));
+      lines.push('');
+    }
+    if (formData.geography?.length > 0) {
+      lines.push('## Target Geography');
+      lines.push(formData.geography.join(', '));
+      lines.push('');
+    }
+
+    return lines.join('\n');
+  };
+
+  // Download Scope of Work as PDF or DOC
+  const downloadScopeOfWork = async (format = 'pdf') => {
+    try {
+      const content = generateScopeOfWorkContent();
+      const appName = (formData.appName || 'scope-of-work').replace(/\s+/g, '-').toLowerCase();
+      const sowFormData = { ...formData, appName: formData.appName || 'Scope of Work', prdVersion: '1.0' };
+      let blob;
+      let filename;
+      if (format === 'docx') {
+        blob = await exportToDOCX(content, sowFormData);
+        filename = `${appName}-scope-of-work.docx`;
+      } else {
+        blob = await exportToPDF(content, sowFormData);
+        filename = `${appName}-scope-of-work.pdf`;
+      }
+      downloadBlob(blob, filename);
+      showNotification(`Scope of Work downloaded as ${format.toUpperCase()}`);
+    } catch (error) {
+      console.error('Scope of Work export error:', error);
+      showNotification('Failed to export Scope of Work', 'error');
+    }
   };
 
   // Help Tooltip Component
@@ -853,80 +993,368 @@ export default function PRDGenerator() {
   // Step 0: App Concept & Scope
   const renderStep0 = () => (
     <div className="space-y-8 bg-blue-50 p-6 rounded-2xl">
-      {/* App Name + App Idea */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div>
-          <label className="flex items-center text-base font-bold text-gray-800 mb-3">
-            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">1a</span>
-            App Name
-            <HelpTooltip text={HELP_TEXTS.appName} />
-          </label>
-          <input
-            type="text"
-            value={formData.appName}
-            onChange={(e) => handleInputChange('appName', e.target.value)}
-            className={`w-full px-4 py-3 bg-white border-2 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all ${formData.appName.length > 50 ? 'border-red-300 text-red-600' : 'border-gray-200'}`}
-            placeholder="App name..."
-          />
-          <div className="flex justify-end mt-1">
-            <span className={`text-sm font-medium ${formData.appName.length > 50 ? 'text-red-500' : 'text-gray-500'}`}>{formData.appName.length}/50</span>
+      {/* Section 1: App Concept */}
+      <div>
+        <label className="flex items-center text-base font-bold text-gray-800 mb-4">
+          <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">1</span>
+          App Concept
+        </label>
+        <div className="space-y-6">
+          {/* App Name + App Idea */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div>
+              <label className="flex items-center text-sm font-semibold text-gray-700 mb-2">
+                App Name
+                <HelpTooltip text={HELP_TEXTS.appName} />
+              </label>
+              <input
+                type="text"
+                value={formData.appName}
+                onChange={(e) => handleInputChange('appName', e.target.value)}
+                className={`w-full px-4 py-3 bg-white border-2 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all ${formData.appName.length > 50 ? 'border-red-300 text-red-600' : 'border-gray-200'}`}
+                placeholder="App name..."
+              />
+              <div className="flex justify-end mt-1">
+                <span className={`text-sm font-medium ${formData.appName.length > 50 ? 'text-red-500' : 'text-gray-500'}`}>{formData.appName.length}/50</span>
+              </div>
+            </div>
+
+            <div>
+              <label className="flex items-center text-sm font-semibold text-gray-700 mb-2">
+                App Idea <span className="text-red-500 ml-1">*</span>
+                <HelpTooltip text={HELP_TEXTS.appIdea} />
+              </label>
+              <input
+                type="text"
+                value={formData.appIdea}
+                onChange={(e) => handleInputChange('appIdea', e.target.value.slice(0, 250))}
+                maxLength={250}
+                className={`w-full px-4 py-3 bg-white border-2 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all ${formData.appIdea.length > 250 ? 'border-red-300 text-red-600' : 'border-gray-200'}`}
+                placeholder="Brief description..."
+              />
+              <div className="flex justify-end mt-1">
+                <span className={`text-sm font-medium ${formData.appIdea.length > 250 ? 'text-red-500' : 'text-gray-500'}`}>{formData.appIdea.length}/250</span>
+              </div>
+            </div>
           </div>
+
+          {/* Problem Statement + Main Goal */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="flex items-center text-sm font-semibold text-gray-700">
+                  Problem Statement
+                  <HelpTooltip text={HELP_TEXTS.problemStatement} />
+                </label>
+                <button
+                  onClick={() => aiEnhanceField('problemStatement')}
+                  disabled={activeAiField === 'problemStatement'}
+                  className="flex items-center px-3 py-1.5 bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
+                >
+                  {activeAiField === 'problemStatement' ? <Loader2 size={14} className="mr-1.5 animate-spin" /> : <Sparkles size={14} className="mr-1.5" />}
+                  AI Enhance
+                </button>
+              </div>
+              <textarea
+                value={formData.problemStatement}
+                onChange={(e) => handleInputChange('problemStatement', e.target.value)}
+                className="w-full px-4 py-3 bg-white border-2 border-gray-200 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all resize-none"
+                rows="3"
+                placeholder="Describe the problems your app will solve..."
+              />
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="flex items-center text-sm font-semibold text-gray-700">
+                  Main Goal
+                  <HelpTooltip text={HELP_TEXTS.goal} />
+                </label>
+                <button
+                  onClick={() => aiEnhanceField('goal')}
+                  disabled={activeAiField === 'goal'}
+                  className="flex items-center px-3 py-1.5 bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
+                >
+                  {activeAiField === 'goal' ? <Loader2 size={16} className="mr-1.5 animate-spin" /> : <Wand2 size={16} className="mr-1.5" />}
+                  AI Enhance
+                </button>
+              </div>
+              <textarea
+                value={formData.goal}
+                onChange={(e) => handleInputChange('goal', e.target.value)}
+                className="w-full px-4 py-3 bg-white border-2 border-gray-200 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all resize-none"
+                rows="3"
+                placeholder="Define the primary objective..."
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Section 2: Target Audience */}
+      <div>
+        <label className="flex items-center text-base font-bold text-gray-800 mb-4">
+          <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">2</span>
+          Target Audience
+        </label>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div ref={demographyRef}>
+          <label className="flex items-center text-sm font-semibold text-gray-700 mb-2">
+            Target Demography (Max 3)
+            <HelpTooltip text={HELP_TEXTS.demography} />
+          </label>
+          <div className="flex flex-wrap gap-2 mb-3">
+            {formData.targetAudienceDemography.map(demo => (
+              <span key={demo} className="inline-flex items-center px-3 py-1 bg-blue-500 text-white rounded-full text-sm">
+                {demo}
+                <button onClick={() => removeDemography(demo)} className="ml-2 hover:text-blue-200">
+                  <X size={14} />
+                </button>
+              </span>
+            ))}
+          </div>
+          {formData.targetAudienceDemography.length < 3 && (
+            <div className="relative">
+              <Search className="absolute left-3 top-3 text-gray-400" size={20} />
+              <input
+                type="text"
+                value={demographySearch}
+                onChange={(e) => setDemographySearch(e.target.value)}
+                onFocus={() => setShowDemographyDropdown(true)}
+                className="w-full pl-10 pr-4 py-3 border-2 border-gray-200 rounded-lg focus:border-blue-400 outline-none"
+                placeholder="Search..."
+              />
+              {showDemographyDropdown && filteredDemography.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border-2 border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                  {filteredDemography.map(opt => (
+                    <button
+                      key={opt}
+                      onClick={() => addDemography(opt)}
+                      className="w-full px-4 py-2 text-left hover:bg-blue-50 text-sm"
+                    >
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
-        <div>
-          <label className="flex items-center text-base font-bold text-gray-800 mb-3">
-            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">1b</span>
-            App Idea
-            <HelpTooltip text={HELP_TEXTS.appIdea} />
+        <div ref={geographyRef}>
+          <label className="flex items-center text-sm font-semibold text-gray-700 mb-2">
+            Target Geography (Max 3)
+            <HelpTooltip text={HELP_TEXTS.geography} />
           </label>
-          <input
-            type="text"
-            value={formData.appIdea}
-            onChange={(e) => handleInputChange('appIdea', e.target.value.slice(0, 250))}
-            maxLength={250}
-            className={`w-full px-4 py-3 bg-white border-2 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all ${formData.appIdea.length > 250 ? 'border-red-300 text-red-600' : 'border-gray-200'}`}
-            placeholder="Brief description..."
-          />
-          <div className="flex justify-end mt-1">
-            <span className={`text-sm font-medium ${formData.appIdea.length > 250 ? 'text-red-500' : 'text-gray-500'}`}>{formData.appIdea.length}/250</span>
+          <div className="flex flex-wrap gap-2 mb-3">
+            {formData.targetAudienceGeography.map(geo => (
+              <span key={geo} className="inline-flex items-center px-3 py-1 bg-blue-500 text-white rounded-full text-sm">
+                {geo}
+                <button onClick={() => removeGeography(geo)} className="ml-2 hover:text-blue-200">
+                  <X size={14} />
+                </button>
+              </span>
+            ))}
           </div>
+          {formData.targetAudienceGeography.length < 3 && (
+            <div className="relative">
+              <Search className="absolute left-3 top-3 text-gray-400" size={20} />
+              <input
+                type="text"
+                value={geographySearch}
+                onChange={(e) => setGeographySearch(e.target.value)}
+                onFocus={() => setShowGeographyDropdown(true)}
+                className="w-full pl-10 pr-4 py-3 border-2 border-gray-200 rounded-lg focus:border-blue-400 outline-none"
+                placeholder="Search..."
+              />
+              {showGeographyDropdown && filteredGeography.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border-2 border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                  {filteredGeography.map(opt => (
+                    <button
+                      key={opt}
+                      onClick={() => addGeography(opt)}
+                      className="w-full px-4 py-2 text-left hover:bg-blue-50 text-sm"
+                    >
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
+        </div>
+      </div>
+
+      {/* Out of Scope */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <label className="flex items-center text-base font-bold text-gray-800">
+            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">3</span>
+            Out of Scope
+            <HelpTooltip text={HELP_TEXTS.outOfScope} />
+          </label>
+          <button
+            onClick={() => aiEnhanceField('outOfScope')}
+            disabled={activeAiField === 'outOfScope'}
+            className="flex items-center px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
+          >
+            {activeAiField === 'outOfScope' ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Wand2 size={16} className="mr-2" />}
+            AI Enhance
+          </button>
+        </div>
+        <textarea
+          value={formData.outOfScope}
+          onChange={(e) => handleInputChange('outOfScope', e.target.value)}
+          className="w-full px-5 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all resize-none"
+          rows="4"
+          placeholder="Features excluded from v1.0..."
+        />
       </div>
 
       {/* Document Upload */}
       <div>
         <label className="flex items-center text-base font-bold text-gray-800 mb-4">
-          <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">2</span>
+          <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">4</span>
           Upload Documents
           <HelpTooltip text={HELP_TEXTS.documents} />
         </label>
 
-        <div className="flex gap-3 mb-6">
-          <button
-            onClick={() => setShowPrepChecklist(!showPrepChecklist)}
-            className="px-4 py-2 bg-blue-100 text-blue-700 font-semibold rounded-lg hover:bg-blue-200 transition-all text-sm"
-          >
-            📋 BuLLMake Document Checklist
-          </button>
-          <button
-            onClick={() => setShowMappedChecklist(!showMappedChecklist)}
-            className="px-4 py-2 bg-teal-100 text-teal-700 font-semibold rounded-lg hover:bg-teal-200 transition-all text-sm"
-          >
-            ✓ Upload Status
-          </button>
-        </div>
+        {/* Two-column layout: Drop files + BuLLMake Checklist */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+          {/* Left column: Drop files + Drive links */}
+          <div className="space-y-4">
+            <label className="cursor-pointer flex flex-col items-center justify-center px-6 py-8 bg-white border-2 border-dashed border-gray-300 rounded-xl hover:border-blue-400 hover:bg-blue-50 transition-all">
+              <FolderArchive size={32} className="text-gray-400 mb-2" />
+              <span className="font-medium text-gray-700 text-sm">Drop files/ZIP or click to browse local folder</span>
+              <span className="text-cyan-600 text-xs font-semibold mt-1 flex items-center gap-1"><Sparkles size={10} /> Or let AI auto-fetch documents</span>
+              <small className="text-gray-400 text-xs mt-1 text-center">Files are validated internally. ZIP archives are extracted securely. Executable files are blocked.</small>
+              <input type="file" onChange={(e) => handleFileUpload(e)} className="hidden" multiple />
+            </label>
 
-        {showPrepChecklist && (
-          <div className="bg-blue-50 border-2 border-blue-200 rounded-xl p-4 mb-6">
-            <ul className="grid grid-cols-3 gap-x-4 gap-y-1.5 text-xs text-blue-800">
-              {DOCUMENT_CHECKLIST.map(item => (
-                <li key={item.id} className="flex items-center">
-                  <Check size={12} className="mr-1.5 text-blue-600 flex-shrink-0" />
-                  {item.label}
-                </li>
-              ))}
-            </ul>
-            <div className="mt-3 pt-3 border-t border-blue-200">
+            {/* Drive links - stacked vertically */}
+            <div className="space-y-3">
+              {/* Google Drive - full width */}
+              <div className="flex items-stretch gap-2">
+                <div className="relative flex-1">
+                  <Link className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                  <input
+                    type="text"
+                    value={formData.googleDriveLink}
+                    onChange={(e) => {
+                      handleInputChange('googleDriveLink', e.target.value);
+                      if (driveSynced.google) setDriveSynced(prev => ({ ...prev, google: false }));
+                    }}
+                    className={`w-full h-full pl-10 pr-4 py-3 border-2 rounded-xl text-sm ${driveSynced.google ? 'border-green-400 bg-green-50' : 'border-gray-200'}`}
+                    placeholder="Google Drive link"
+                  />
+                </div>
+                <button
+                  disabled={driveSyncing.google}
+                  onClick={async () => {
+                    if (!formData.googleDriveLink.trim()) {
+                      showNotification('Enter a Google Drive link first', 'error');
+                      return;
+                    }
+                    setDriveSyncing(prev => ({ ...prev, google: true }));
+                    try {
+                      const result = await analyzeDriveLink(formData.googleDriveLink, 'Google Drive', formData);
+                      if (result.success && result.data) {
+                        if (result.data.warning) {
+                          showNotification(result.data.warning, 'error');
+                        } else if (result.data.relevantCount > 0) {
+                          setDriveSynced(prev => ({ ...prev, google: true }));
+                          setPendingFileFields(result.data.fields);
+                          setShowFileAnalysisDialog(true);
+                          showNotification(`Google Drive synced — ${result.data.relevantCount} field${result.data.relevantCount > 1 ? 's' : ''} found`, 'info');
+                        } else {
+                          setDriveSynced(prev => ({ ...prev, google: true }));
+                          showNotification('Google Drive synced — no relevant PRD info found in document', 'info');
+                        }
+                      } else {
+                        showNotification(result.error || 'Failed to analyze Google Drive link', 'error');
+                      }
+                    } catch {
+                      showNotification('Failed to sync Google Drive link', 'error');
+                    }
+                    setDriveSyncing(prev => ({ ...prev, google: false }));
+                  }}
+                  className={`px-4 rounded-xl text-sm font-semibold flex items-center gap-1.5 transition-all whitespace-nowrap ${
+                    driveSyncing.google
+                      ? 'bg-blue-100 text-blue-500 border-2 border-blue-200 cursor-wait'
+                      : driveSynced.google
+                        ? 'bg-green-500 text-white'
+                        : 'bg-gray-100 text-gray-600 hover:bg-blue-50 hover:text-blue-600 border-2 border-gray-200'
+                  }`}
+                >
+                  {driveSyncing.google ? <Loader2 size={16} className="animate-spin" /> : driveSynced.google ? <Check size={16} /> : <RefreshCw size={16} />}
+                  {driveSyncing.google ? 'Syncing' : driveSynced.google ? 'Synced' : 'Sync'}
+                </button>
+              </div>
+              {/* OneDrive - full width below */}
+              <div className="flex items-stretch gap-2">
+                <div className="relative flex-1">
+                  <Link className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                  <input
+                    type="text"
+                    value={formData.oneDriveLink}
+                    onChange={(e) => {
+                      handleInputChange('oneDriveLink', e.target.value);
+                      if (driveSynced.onedrive) setDriveSynced(prev => ({ ...prev, onedrive: false }));
+                    }}
+                    className={`w-full h-full pl-10 pr-4 py-3 border-2 rounded-xl text-sm ${driveSynced.onedrive ? 'border-green-400 bg-green-50' : 'border-gray-200'}`}
+                    placeholder="OneDrive link"
+                  />
+                </div>
+                <button
+                  disabled={driveSyncing.onedrive}
+                  onClick={async () => {
+                    if (!formData.oneDriveLink.trim()) {
+                      showNotification('Enter a OneDrive link first', 'error');
+                      return;
+                    }
+                    setDriveSyncing(prev => ({ ...prev, onedrive: true }));
+                    try {
+                      const result = await analyzeDriveLink(formData.oneDriveLink, 'OneDrive', formData);
+                      if (result.success && result.data) {
+                        if (result.data.warning) {
+                          showNotification(result.data.warning, 'error');
+                        } else if (result.data.relevantCount > 0) {
+                          setDriveSynced(prev => ({ ...prev, onedrive: true }));
+                          setPendingFileFields(result.data.fields);
+                          setShowFileAnalysisDialog(true);
+                          showNotification(`OneDrive synced — ${result.data.relevantCount} field${result.data.relevantCount > 1 ? 's' : ''} found`, 'info');
+                        } else {
+                          setDriveSynced(prev => ({ ...prev, onedrive: true }));
+                          showNotification('OneDrive synced — no relevant PRD info found in document', 'info');
+                        }
+                      } else {
+                        showNotification(result.error || 'Failed to analyze OneDrive link', 'error');
+                      }
+                    } catch {
+                      showNotification('Failed to sync OneDrive link', 'error');
+                    }
+                    setDriveSyncing(prev => ({ ...prev, onedrive: false }));
+                  }}
+                  className={`px-4 rounded-xl text-sm font-semibold flex items-center gap-1.5 transition-all whitespace-nowrap ${
+                    driveSyncing.onedrive
+                      ? 'bg-blue-100 text-blue-500 border-2 border-blue-200 cursor-wait'
+                      : driveSynced.onedrive
+                        ? 'bg-green-500 text-white'
+                        : 'bg-gray-100 text-gray-600 hover:bg-blue-50 hover:text-blue-600 border-2 border-gray-200'
+                  }`}
+                >
+                  {driveSyncing.onedrive ? <Loader2 size={16} className="animate-spin" /> : driveSynced.onedrive ? <Check size={16} /> : <RefreshCw size={16} />}
+                  {driveSyncing.onedrive ? 'Syncing' : driveSynced.onedrive ? 'Synced' : 'Sync'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Right column: Claude Cowork + BuLLMake Checklist */}
+          <div className="bg-blue-50 border-2 border-blue-200 rounded-xl p-4">
+            {/* Claude Cowork - alternative to manual upload */}
+            <div className="bg-gradient-to-r from-cyan-50 to-blue-50 rounded-lg p-3 mb-3 border border-cyan-300">
               <label className="flex items-center gap-2 cursor-pointer">
                 <div
                   onClick={() => setAllowClaudeCowork(!allowClaudeCowork)}
@@ -1041,224 +1469,21 @@ export default function PRDGenerator() {
                 </div>
               )}
             </div>
-          </div>
-        )}
 
-        {showMappedChecklist && (() => {
-          const categoryKeywords = {
-            app_idea: ['idea', 'concept', 'vision', 'pitch', 'overview', 'brief', 'proposal', 'summary', 'about'],
-            design_doc: ['design', 'sdd', 'srs', 'brd', 'frd', 'functional', 'software design', 'spec', 'requirement'],
-            notebooklm: ['notebooklm', 'notebook', 'nlm'],
-            storm_pdf: ['storm', 'storm pdf'],
-            client_expectations: ['client', 'expectation', 'stakeholder', 'scope'],
-            process_flow: ['flow', 'process', 'journey', 'workflow', 'diagram', 'wireframe', 'sitemap', 'navigation', 'ux', 'ui'],
-            data_schema: ['schema', 'data', 'database', 'erd', 'model', 'entity', 'table', 'sql', 'migration'],
-            video_walkthrough: ['video', 'walkthrough', 'demo', 'recording', 'screencast', 'mp4', 'mov', 'webm'],
-            screenshots: ['screenshot', 'screen', 'capture', 'snapshot', 'existing tool', 'png', 'jpg', 'jpeg'],
-            legacy_code: ['legacy', 'code', 'source', 'codebase', 'repo'],
-            competitive_tools: ['competitor', 'competition', 'competitive', 'market', 'benchmark', 'comparison', 'landscape'],
-            integrations_3p: ['3rd party', 'third party', 'external', 'plugin', 'addon'],
-            apis: ['api', 'endpoint', 'rest', 'graphql', 'swagger', 'openapi'],
-            mcps: ['mcp', 'model context'],
-            integrations: ['integration', 'connect', 'sync', 'webhook', 'oauth']
-          };
-
-          const fileMatches = {};
-          const matchedFileIds = new Set();
-
-          DOCUMENT_CHECKLIST.forEach(item => {
-            const keywords = categoryKeywords[item.id] || [];
-            fileMatches[item.id] = formData.uploadedFiles.filter(f => {
-              const name = f.name.toLowerCase().replace(/[_\-./\\]/g, ' ');
-              return keywords.some(kw => name.includes(kw));
-            });
-            fileMatches[item.id].forEach(f => matchedFileIds.add(f.id));
-          });
-
-          const unmatchedFiles = formData.uploadedFiles.filter(f => !matchedFileIds.has(f.id));
-
-          return (
-            <div className="bg-teal-50 border-2 border-teal-200 rounded-xl p-5 mb-6">
-              <h4 className="font-bold text-teal-900 mb-3">Upload Status</h4>
-              <div className="space-y-2 text-sm">
-                {DOCUMENT_CHECKLIST.map(item => {
-                  const matched = fileMatches[item.id];
-                  return (
-                    <div key={item.id} className="p-2 bg-white rounded-lg">
-                      <div className="flex items-center justify-between">
-                        <span className="text-gray-700">{item.label}</span>
-                        {matched.length > 0 ? (
-                          <span className="text-green-600 flex items-center">
-                            <CheckCircle2 size={16} className="mr-1" /> {matched.length} file{matched.length > 1 ? 's' : ''}
-                          </span>
-                        ) : (
-                          <span className="text-gray-400">Pending</span>
-                        )}
-                      </div>
-                      {matched.length > 0 && (
-                        <div className="mt-1 pl-1 flex flex-wrap gap-1">
-                          {matched.map(f => (
-                            <span key={f.id} className="inline-flex items-center px-2 py-0.5 bg-green-50 text-green-700 rounded text-xs">
-                              {getFileIcon(f.type)} {f.name}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-                {unmatchedFiles.length > 0 && (
-                  <div className="p-2 bg-white rounded-lg">
-                    <div className="flex items-center justify-between">
-                      <span className="text-gray-500 italic">Other uploads</span>
-                      <span className="text-blue-500 text-xs">{unmatchedFiles.length} file{unmatchedFiles.length > 1 ? 's' : ''}</span>
-                    </div>
-                    <div className="mt-1 pl-1 flex flex-wrap gap-1">
-                      {unmatchedFiles.map(f => (
-                        <span key={f.id} className="inline-flex items-center px-2 py-0.5 bg-gray-50 text-gray-600 rounded text-xs">
-                          {getFileIcon(f.type)} {f.name}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })()}
-
-        <button
-          onClick={handleDownloadExcelTemplate}
-          className="w-full mb-4 flex items-center justify-center gap-3 px-6 py-4 bg-gradient-to-r from-emerald-500 to-green-500 text-white rounded-xl hover:shadow-lg hover:from-emerald-600 hover:to-green-600 transition-all"
-        >
-          <Download size={20} />
-          <div className="text-left">
-            <span className="font-semibold text-sm">Download Excel Template</span>
-            <p className="text-emerald-100 text-xs">Fill out the template offline and upload it to auto-populate all fields</p>
-          </div>
-        </button>
-
-        <div className="grid grid-cols-2 gap-4 mb-6">
-          <label className="cursor-pointer flex flex-col items-center justify-center px-6 py-8 bg-white border-2 border-dashed border-gray-300 rounded-xl hover:border-blue-400 hover:bg-blue-50 transition-all">
-            <FolderArchive size={32} className="text-gray-400 mb-2" />
-            <span className="font-medium text-gray-700 text-sm">Drop files/ZIP or click to browse local folder</span>
-            <small className="text-gray-400 text-xs mt-1 text-center">Files are validated internally. ZIP archives are extracted securely. Executable files are blocked.</small>
-            <input type="file" onChange={(e) => handleFileUpload(e)} className="hidden" multiple />
-          </label>
-
-          <div className="flex flex-col gap-3">
-            <div className="flex items-stretch gap-2 flex-1">
-              <div className="relative flex-1">
-                <Link className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-                <input
-                  type="text"
-                  value={formData.googleDriveLink}
-                  onChange={(e) => {
-                    handleInputChange('googleDriveLink', e.target.value);
-                    if (driveSynced.google) setDriveSynced(prev => ({ ...prev, google: false }));
-                  }}
-                  className={`w-full h-full pl-10 pr-4 py-3 border-2 rounded-xl text-sm ${driveSynced.google ? 'border-green-400 bg-green-50' : 'border-gray-200'}`}
-                  placeholder="Google Drive link"
-                />
-              </div>
-              <button
-                disabled={driveSyncing.google}
-                onClick={async () => {
-                  if (!formData.googleDriveLink.trim()) {
-                    showNotification('Enter a Google Drive link first', 'error');
-                    return;
-                  }
-                  setDriveSyncing(prev => ({ ...prev, google: true }));
-                  try {
-                    const result = await analyzeDriveLink(formData.googleDriveLink, 'Google Drive', formData);
-                    if (result.success && result.data) {
-                      if (result.data.warning) {
-                        showNotification(result.data.warning, 'error');
-                      } else if (result.data.relevantCount > 0) {
-                        setDriveSynced(prev => ({ ...prev, google: true }));
-                        setPendingFileFields(result.data.fields);
-                        setShowFileAnalysisDialog(true);
-                        showNotification(`Google Drive synced — ${result.data.relevantCount} field${result.data.relevantCount > 1 ? 's' : ''} found`, 'info');
-                      } else {
-                        setDriveSynced(prev => ({ ...prev, google: true }));
-                        showNotification('Google Drive synced — no relevant PRD info found in document', 'info');
-                      }
-                    } else {
-                      showNotification(result.error || 'Failed to analyze Google Drive link', 'error');
-                    }
-                  } catch {
-                    showNotification('Failed to sync Google Drive link', 'error');
-                  }
-                  setDriveSyncing(prev => ({ ...prev, google: false }));
-                }}
-                className={`px-4 rounded-xl text-sm font-semibold flex items-center gap-1.5 transition-all whitespace-nowrap ${
-                  driveSyncing.google
-                    ? 'bg-blue-100 text-blue-500 border-2 border-blue-200 cursor-wait'
-                    : driveSynced.google
-                      ? 'bg-green-500 text-white'
-                      : 'bg-gray-100 text-gray-600 hover:bg-blue-50 hover:text-blue-600 border-2 border-gray-200'
-                }`}
-              >
-                {driveSyncing.google ? <Loader2 size={16} className="animate-spin" /> : driveSynced.google ? <Check size={16} /> : <RefreshCw size={16} />}
-                {driveSyncing.google ? 'Syncing' : driveSynced.google ? 'Synced' : 'Sync'}
-              </button>
-            </div>
-
-            <div className="flex items-stretch gap-2 flex-1">
-              <div className="relative flex-1">
-                <Link className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-                <input
-                  type="text"
-                  value={formData.oneDriveLink}
-                  onChange={(e) => {
-                    handleInputChange('oneDriveLink', e.target.value);
-                    if (driveSynced.onedrive) setDriveSynced(prev => ({ ...prev, onedrive: false }));
-                  }}
-                  className={`w-full h-full pl-10 pr-4 py-3 border-2 rounded-xl text-sm ${driveSynced.onedrive ? 'border-green-400 bg-green-50' : 'border-gray-200'}`}
-                  placeholder="OneDrive link"
-                />
-              </div>
-              <button
-                disabled={driveSyncing.onedrive}
-                onClick={async () => {
-                  if (!formData.oneDriveLink.trim()) {
-                    showNotification('Enter a OneDrive link first', 'error');
-                    return;
-                  }
-                  setDriveSyncing(prev => ({ ...prev, onedrive: true }));
-                  try {
-                    const result = await analyzeDriveLink(formData.oneDriveLink, 'OneDrive', formData);
-                    if (result.success && result.data) {
-                      if (result.data.warning) {
-                        showNotification(result.data.warning, 'error');
-                      } else if (result.data.relevantCount > 0) {
-                        setDriveSynced(prev => ({ ...prev, onedrive: true }));
-                        setPendingFileFields(result.data.fields);
-                        setShowFileAnalysisDialog(true);
-                        showNotification(`OneDrive synced — ${result.data.relevantCount} field${result.data.relevantCount > 1 ? 's' : ''} found`, 'info');
-                      } else {
-                        setDriveSynced(prev => ({ ...prev, onedrive: true }));
-                        showNotification('OneDrive synced — no relevant PRD info found in document', 'info');
-                      }
-                    } else {
-                      showNotification(result.error || 'Failed to analyze OneDrive link', 'error');
-                    }
-                  } catch {
-                    showNotification('Failed to sync OneDrive link', 'error');
-                  }
-                  setDriveSyncing(prev => ({ ...prev, onedrive: false }));
-                }}
-                className={`px-4 rounded-xl text-sm font-semibold flex items-center gap-1.5 transition-all whitespace-nowrap ${
-                  driveSyncing.onedrive
-                    ? 'bg-blue-100 text-blue-500 border-2 border-blue-200 cursor-wait'
-                    : driveSynced.onedrive
-                      ? 'bg-green-500 text-white'
-                      : 'bg-gray-100 text-gray-600 hover:bg-blue-50 hover:text-blue-600 border-2 border-gray-200'
-                }`}
-              >
-                {driveSyncing.onedrive ? <Loader2 size={16} className="animate-spin" /> : driveSynced.onedrive ? <Check size={16} /> : <RefreshCw size={16} />}
-                {driveSyncing.onedrive ? 'Syncing' : driveSynced.onedrive ? 'Synced' : 'Sync'}
-              </button>
+            <h4 className="font-semibold text-blue-800 mb-3 text-sm">📋 BuLLMake Document Checklist</h4>
+            <div className="grid grid-cols-3 gap-x-4 gap-y-1.5 text-xs text-blue-800">
+              {DOCUMENT_CHECKLIST.map(item => {
+                const hasMatch = formData.uploadedFiles.some(f => {
+                  const name = f.name.toLowerCase().replace(/[_\-./\\]/g, ' ');
+                  return item.keywords.some(kw => name.includes(kw));
+                });
+                return (
+                  <label key={item.id} className="flex items-center">
+                    <input type="checkbox" checked={hasMatch} readOnly className="w-3 h-3 mr-1.5 rounded border-blue-300 text-blue-600 flex-shrink-0" />
+                    <span className={hasMatch ? 'text-green-700 font-medium' : ''}>{item.label}</span>
+                  </label>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -1293,13 +1518,13 @@ export default function PRDGenerator() {
         )}
       </div>
 
-      {/* BuLLM PRD Template Section */}
+      {/* BuLLMake PRD Prompt Section */}
       <div className="bg-gradient-to-br from-blue-50 to-cyan-50 p-6 rounded-xl border-2 border-blue-200">
         <div className="flex items-center justify-between mb-3">
           <label className="flex items-center text-base font-bold text-blue-900">
-            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">3</span>
-            BuLLM PRD Template
-            <HelpTooltip text="Create your PRD prompt using the ISTVON framework for comprehensive documentation." />
+            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">5</span>
+            BuLLMake PRD Prompt
+            <HelpTooltip text="We use this Prompt to generate your PRD!" />
           </label>
           <button
             onClick={async () => {
@@ -1326,22 +1551,14 @@ export default function PRDGenerator() {
           </button>
         </div>
         <textarea
-          value={formData.prdPromptTemplate || DEFAULT_PRD_PROMPT}
+          value={formData.prdPromptTemplate || ''}
           onChange={(e) => handleInputChange('prdPromptTemplate', e.target.value)}
-          className={`w-full px-5 py-4 bg-white border-2 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all resize-none ${(formData.prdPromptTemplate || DEFAULT_PRD_PROMPT).length > 1150 ? 'border-red-300 text-red-600' : 'border-blue-200'}`}
+          className={`w-full px-5 py-4 bg-white border-2 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all resize-none ${(formData.prdPromptTemplate || '').length > 1150 ? 'border-red-300 text-red-600' : 'border-blue-200'}`}
           rows="5"
+          placeholder="We use this Prompt to generate your PRD!"
         />
-        <div className="flex justify-between items-center mt-4">
-          <div className="flex gap-3">
-            <button
-              onClick={() => setShowDetailedReport(!showDetailedReport)}
-              className="flex items-center px-5 py-2.5 bg-white text-blue-700 font-semibold rounded-lg hover:bg-blue-100 transition-all border-2 border-blue-300"
-            >
-              <FileCheck size={16} className="mr-2" />
-              {showDetailedReport ? 'Hide Scope of Work' : 'Scope of Work'}
-            </button>
-          </div>
-          <span className={`text-sm font-medium ${(formData.prdPromptTemplate || DEFAULT_PRD_PROMPT).length > 1150 ? 'text-red-500' : 'text-blue-700'}`}>{(formData.prdPromptTemplate || DEFAULT_PRD_PROMPT).length}/1150</span>
+        <div className="flex justify-end items-center mt-4">
+          <span className={`text-sm font-medium ${(formData.prdPromptTemplate || '').length > 1150 ? 'text-red-500' : 'text-blue-700'}`}>{(formData.prdPromptTemplate || '').length}/1150</span>
         </div>
       </div>
 
@@ -1394,277 +1611,6 @@ export default function PRDGenerator() {
         </div>
       )}
 
-      {/* Detailed Report Section */}
-      {showDetailedReport && (
-        <div className="bg-white rounded-xl border-2 border-blue-200 p-6">
-          <h4 className="font-bold text-blue-800 mb-4 flex items-center">
-            <FileCheck size={20} className="mr-2" />
-            Detailed Report (ISTVON v2.4)
-          </h4>
-          <div className="space-y-4 text-sm">
-            {ISTVON_SECTIONS.map((section) => (
-              <div key={section.id} className="border-b border-gray-100 pb-3">
-                <h5 className="font-semibold text-gray-800 mb-2">{section.letter} - {section.title}</h5>
-                <div className="grid grid-cols-2 gap-2 text-gray-600">
-                  {section.fields.map((field) => (
-                    <div key={field.key} className="flex">
-                      <span className="font-medium mr-2">{field.label}:</span>
-                      <span>{formData.istvonData[field.key] || '—'}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Problem Statement */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <label className="flex items-center text-base font-bold text-gray-800">
-            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">4a</span>
-            Problem Statement
-            <HelpTooltip text={HELP_TEXTS.problemStatement} />
-          </label>
-          <button
-            onClick={() => aiEnhanceField('problemStatement')}
-            disabled={activeAiField === 'problemStatement'}
-            className="flex items-center px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
-          >
-            {activeAiField === 'problemStatement' ? <Loader2 size={14} className="mr-2 animate-spin" /> : <Sparkles size={14} className="mr-2" />}
-            AI Enhance
-          </button>
-        </div>
-        <textarea
-          value={formData.problemStatement}
-          onChange={(e) => handleInputChange('problemStatement', e.target.value)}
-          className="w-full px-5 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all resize-none"
-          rows="5"
-          placeholder="Describe the problems your app will solve..."
-        />
-      </div>
-
-      {/* Goal */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <label className="flex items-center text-base font-bold text-gray-800">
-            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">4b</span>
-            Main Goal
-            <HelpTooltip text={HELP_TEXTS.goal} />
-          </label>
-          <button
-            onClick={() => aiEnhanceField('goal')}
-            disabled={activeAiField === 'goal'}
-            className="flex items-center px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
-          >
-            {activeAiField === 'goal' ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Wand2 size={16} className="mr-2" />}
-            AI Enhance
-          </button>
-        </div>
-        <textarea
-          value={formData.goal}
-          onChange={(e) => handleInputChange('goal', e.target.value)}
-          className="w-full px-5 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all resize-none"
-          rows="3"
-          placeholder="Define the primary objective..."
-        />
-      </div>
-
-      {/* Out of Scope */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <label className="flex items-center text-base font-bold text-gray-800">
-            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">5</span>
-            Out of Scope
-            <HelpTooltip text={HELP_TEXTS.outOfScope} />
-          </label>
-          <button
-            onClick={() => aiEnhanceField('outOfScope')}
-            disabled={activeAiField === 'outOfScope'}
-            className="flex items-center px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold rounded-lg hover:shadow-lg transition-all disabled:opacity-50"
-          >
-            {activeAiField === 'outOfScope' ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Wand2 size={16} className="mr-2" />}
-            AI Enhance
-          </button>
-        </div>
-        <textarea
-          value={formData.outOfScope}
-          onChange={(e) => handleInputChange('outOfScope', e.target.value)}
-          className="w-full px-5 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all resize-none"
-          rows="4"
-          placeholder="Features excluded from v1.0..."
-        />
-      </div>
-
-      {/* Target Audience */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div ref={demographyRef}>
-          <label className="flex items-center text-base font-bold text-gray-800 mb-3">
-            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">6a</span>
-            Target Demography (Max 3)
-            <HelpTooltip text={HELP_TEXTS.demography} />
-          </label>
-          <div className="flex flex-wrap gap-2 mb-3">
-            {formData.targetAudienceDemography.map(demo => (
-              <span key={demo} className="inline-flex items-center px-3 py-1 bg-blue-500 text-white rounded-full text-sm">
-                {demo}
-                <button onClick={() => removeDemography(demo)} className="ml-2 hover:text-blue-200">
-                  <X size={14} />
-                </button>
-              </span>
-            ))}
-          </div>
-          {formData.targetAudienceDemography.length < 3 && (
-            <div className="relative">
-              <Search className="absolute left-3 top-3 text-gray-400" size={20} />
-              <input
-                type="text"
-                value={demographySearch}
-                onChange={(e) => setDemographySearch(e.target.value)}
-                onFocus={() => setShowDemographyDropdown(true)}
-                className="w-full pl-10 pr-4 py-3 border-2 border-gray-200 rounded-lg focus:border-blue-400 outline-none"
-                placeholder="Search..."
-              />
-              {showDemographyDropdown && filteredDemography.length > 0 && (
-                <div className="absolute z-10 w-full mt-1 bg-white border-2 border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                  {filteredDemography.map(opt => (
-                    <button
-                      key={opt}
-                      onClick={() => addDemography(opt)}
-                      className="w-full px-4 py-2 text-left hover:bg-blue-50 text-sm"
-                    >
-                      {opt}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div ref={geographyRef}>
-          <label className="flex items-center text-base font-bold text-gray-800 mb-3">
-            <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">6b</span>
-            Target Geography (Max 3)
-            <HelpTooltip text={HELP_TEXTS.geography} />
-          </label>
-          <div className="flex flex-wrap gap-2 mb-3">
-            {formData.targetAudienceGeography.map(geo => (
-              <span key={geo} className="inline-flex items-center px-3 py-1 bg-blue-500 text-white rounded-full text-sm">
-                {geo}
-                <button onClick={() => removeGeography(geo)} className="ml-2 hover:text-blue-200">
-                  <X size={14} />
-                </button>
-              </span>
-            ))}
-          </div>
-          {formData.targetAudienceGeography.length < 3 && (
-            <div className="relative">
-              <Search className="absolute left-3 top-3 text-gray-400" size={20} />
-              <input
-                type="text"
-                value={geographySearch}
-                onChange={(e) => setGeographySearch(e.target.value)}
-                onFocus={() => setShowGeographyDropdown(true)}
-                className="w-full pl-10 pr-4 py-3 border-2 border-gray-200 rounded-lg focus:border-blue-400 outline-none"
-                placeholder="Search..."
-              />
-              {showGeographyDropdown && filteredGeography.length > 0 && (
-                <div className="absolute z-10 w-full mt-1 bg-white border-2 border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                  {filteredGeography.map(opt => (
-                    <button
-                      key={opt}
-                      onClick={() => addGeography(opt)}
-                      className="w-full px-4 py-2 text-left hover:bg-blue-50 text-sm"
-                    >
-                      {opt}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Timeline & Project Details */}
-      <div>
-        <label className="flex items-center text-base font-bold text-gray-800 mb-4">
-          <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">7</span>
-          Timeline & Project Details
-          <HelpTooltip text={HELP_TEXTS.timeline} />
-        </label>
-
-        <div className="grid grid-cols-3 gap-4 mb-4">
-          <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-2">Project Type</label>
-            <select
-              value={formData.projectType}
-              onChange={(e) => handleInputChange('projectType', e.target.value)}
-              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg outline-none focus:border-blue-400"
-            >
-              <option value="">Select</option>
-              <option value="internal">Internal</option>
-              <option value="poc">POC</option>
-              <option value="paid">Paid</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-2">Due Date</label>
-            <input
-              type="date"
-              value={formData.dueDate}
-              onChange={(e) => handleInputChange('dueDate', e.target.value)}
-              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg outline-none focus:border-blue-400"
-            />
-          </div>
-          <div className="flex items-end">
-            <button
-              onClick={addMilestone}
-              className="w-full px-4 py-3 bg-blue-500 text-white font-semibold rounded-lg hover:bg-blue-600"
-            >
-              Add Milestone
-            </button>
-          </div>
-        </div>
-
-        {formData.milestones.length > 0 && (
-          <div className="space-y-3">
-            <h4 className="font-semibold text-gray-700">Milestones</h4>
-            {formData.milestones.map((milestone) => (
-              <div key={milestone.id} className="flex gap-3 p-3 bg-blue-50 rounded-lg">
-                <input
-                  type="text"
-                  value={milestone.name}
-                  onChange={(e) => updateMilestone(milestone.id, 'name', e.target.value)}
-                  className="flex-1 px-3 py-2 border border-blue-200 rounded"
-                  placeholder="Name"
-                />
-                <input
-                  type="date"
-                  value={milestone.date}
-                  onChange={(e) => updateMilestone(milestone.id, 'date', e.target.value)}
-                  className="px-3 py-2 border border-blue-200 rounded"
-                />
-                <input
-                  type="text"
-                  value={milestone.description}
-                  onChange={(e) => updateMilestone(milestone.id, 'description', e.target.value)}
-                  className="flex-1 px-3 py-2 border border-blue-200 rounded"
-                  placeholder="Description"
-                />
-                <button
-                  onClick={() => removeMilestone(milestone.id)}
-                  className="p-2 text-red-500 hover:bg-red-50 rounded"
-                >
-                  <X size={20} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
     </div>
   );
 
@@ -1960,14 +1906,14 @@ export default function PRDGenerator() {
 
           <label className="cursor-pointer flex flex-col items-center justify-center px-6 py-6 bg-white border-2 border-dashed border-gray-300 rounded-xl hover:border-blue-400 transition-all">
             <Camera size={32} className="text-gray-400 mb-2" />
-            <span className="font-medium text-gray-700 text-sm mb-1">Photographs</span>
-            <span className="text-xs text-gray-500">Brand images</span>
+            <span className="font-medium text-gray-700 text-sm mb-1">UI Mockups</span>
+            <span className="text-xs text-gray-500">Screenshots / mockups</span>
             <input type="file" accept="image/*" onChange={(e) => handleFileUpload(e, 'photos')} className="hidden" multiple />
           </label>
         </div>
         {formData.uploadedPhotos.length > 0 && (
           <div className="mt-2">
-            <div className="text-sm text-gray-500">{formData.uploadedPhotos.length} photo(s) uploaded — visible in Visual Examples below</div>
+            <div className="text-sm text-gray-500">{formData.uploadedPhotos.length} mockup(s) uploaded — used in UI Preview Templates</div>
           </div>
         )}
       </div>
@@ -2195,65 +2141,34 @@ export default function PRDGenerator() {
         </div>
       </div>
 
-      {/* Image & Photography */}
+      {/* UI Mockup & Screenshots */}
       <div>
         <label className="flex items-center text-base font-bold text-gray-800 mb-4">
           <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">6</span>
-          Image & Photography Guidelines
-          <HelpTooltip text={HELP_TEXTS.images} />
+          UI Mockup & Screenshots
         </label>
+        <p className="text-sm text-gray-500 mb-4">Upload up to 4 UI mockups or screenshots that reflect your desired look & feel. These will appear in the UI Preview Templates below.</p>
         <div className="grid grid-cols-2 gap-6">
-          <div className="bg-white p-5 rounded-xl border-2 border-gray-200">
-            <div className="grid grid-cols-3 gap-2 mb-4">
-              {[
-                { label: 'Border Radius', key: 'imageBorderRadius' },
-                { label: 'Aspect Ratio', key: 'imageAspectRatio' },
-                { label: 'Min Quality', key: 'imageQuality' }
-              ].map(({ label, key }) => (
-                <div key={key}>
-                  <label className="block text-xs font-semibold text-gray-600 mb-1">{label}</label>
-                  <input
-                    type="text"
-                    value={formData[key]}
-                    onChange={(e) => handleInputChange(key, e.target.value)}
-                    className="w-full px-2 py-1 border border-gray-300 rounded text-xs"
-                  />
-                </div>
-              ))}
-            </div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-sm font-semibold text-gray-700">Image Treatment</label>
-              <button
-                onClick={() => aiEnhanceField('imageGuidelines')}
-                disabled={activeAiField === 'imageGuidelines'}
-                className="text-xs px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
-              >
-                {activeAiField === 'imageGuidelines' ? 'Processing...' : 'AI Enhance'}
-              </button>
-            </div>
-            <textarea
-              value={formData.imageGuidelines}
-              onChange={(e) => handleInputChange('imageGuidelines', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded text-xs resize-none"
-              rows="5"
-              placeholder="Shadows, filters, compression..."
-            />
-          </div>
+          {/* Upload area */}
+          <label className="cursor-pointer flex flex-col items-center justify-center bg-white border-2 border-dashed border-gray-300 rounded-xl p-8 hover:border-blue-400 hover:bg-blue-50/30 transition-all">
+            <Upload size={36} className="text-gray-400 mb-3" />
+            <span className="font-semibold text-gray-700 text-sm mb-1">Drop mockups or click to upload</span>
+            <span className="text-xs text-gray-500">PNG, JPG, SVG — max 4 images</span>
+            <input type="file" accept="image/*" onChange={(e) => handleFileUpload(e, 'photos')} className="hidden" multiple />
+          </label>
 
+          {/* 2x2 Preview grid */}
           <div className="bg-white p-5 rounded-xl border-2 border-gray-200">
-            <div className="text-sm font-semibold text-gray-700 mb-3">Visual Examples</div>
+            <div className="text-sm font-semibold text-gray-700 mb-3">Uploaded Mockups {formData.uploadedPhotos.length > 0 && <span className="text-xs font-normal text-gray-400 ml-1">({formData.uploadedPhotos.length}/4)</span>}</div>
             <div className="grid grid-cols-2 gap-3">
-              {(formData.uploadedPhotos.length > 0
-                ? formData.uploadedPhotos.slice(0, 4)
-                : ['from-blue-200 to-cyan-300', 'from-blue-200 to-cyan-300', 'from-purple-200 to-pink-300', 'from-green-200 to-teal-300'].map((g, i) => ({ _gradient: g, _idx: i }))
-              ).map((item, idx) =>
-                item.base64 ? (
+              {[0, 1, 2, 3].map((idx) => {
+                const item = formData.uploadedPhotos[idx];
+                return item?.base64 ? (
                   <div key={item.id || idx} className="relative group">
                     <img
                       src={item.base64}
-                      alt={item.name || `Photo ${idx + 1}`}
-                      className="h-20 w-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
-                      style={{ borderRadius: formData.imageBorderRadius }}
+                      alt={item.name || `Mockup ${idx + 1}`}
+                      className="h-24 w-full object-cover rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
                       onClick={() => setViewingPhoto(item)}
                       title="Click to view"
                     />
@@ -2268,19 +2183,450 @@ export default function PRDGenerator() {
                     </div>
                   </div>
                 ) : (
-                  <div
-                    key={idx}
-                    className={`h-20 bg-gradient-to-br ${item._gradient}`}
-                    style={{ borderRadius: formData.imageBorderRadius }}
-                  />
-                )
-              )}
+                  <div key={idx} className="h-24 bg-gray-50 border-2 border-dashed border-gray-200 rounded-lg flex flex-col items-center justify-center">
+                    <Camera size={16} className="text-gray-300 mb-1" />
+                    <span className="text-[10px] text-gray-300">Screen {idx + 1}</span>
+                  </div>
+                );
+              })}
             </div>
-            <p className="text-xs text-gray-500 mt-3">
-              Border Radius: {formData.imageBorderRadius} {formData.uploadedPhotos.length > 0 ? `· ${Math.min(formData.uploadedPhotos.length, 4)} of ${formData.uploadedPhotos.length} photo(s)` : ''}
-            </p>
           </div>
         </div>
+      </div>
+
+      {/* UI Preview Templates */}
+      <div className="bg-white rounded-xl border-2 border-gray-200 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h4 className="font-bold text-gray-800 flex items-center">
+            <Eye size={20} className="mr-2" />
+            UI Preview Templates
+            {selectedTemplateIdx !== null && uiTemplates?.[selectedTemplateIdx] && (
+              <span className="ml-3 text-sm font-normal text-purple-600 bg-purple-50 px-3 py-1 rounded-full">
+                Selected: {uiTemplates[selectedTemplateIdx].templateName}
+              </span>
+            )}
+          </h4>
+          <div className="flex items-center gap-2">
+            {templatesMinimized && uiTemplates && (
+              <button
+                onClick={() => setTemplatesMinimized(false)}
+                className="px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 bg-gray-100 text-gray-700 hover:bg-gray-200 transition-all"
+              >
+                <ChevronDown size={16} />
+                Expand
+              </button>
+            )}
+            <button
+              onClick={handleGenerateUITemplates}
+              disabled={generatingTemplates || aiEnhancing}
+              className={`px-5 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all ${
+                generatingTemplates
+                  ? 'bg-purple-100 text-purple-500 cursor-wait'
+                  : 'bg-gradient-to-r from-purple-500 to-indigo-500 text-white hover:shadow-lg hover:from-purple-600 hover:to-indigo-600'
+              }`}
+            >
+              {generatingTemplates ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />}
+              {generatingTemplates ? 'Generating...' : 'Generate Previews'}
+            </button>
+          </div>
+        </div>
+        {!templatesMinimized && (
+          <p className="text-sm text-gray-500 mb-5">AI-generated UI templates based on your app concept, platform, and audience. {formData.uploadedPhotos.length > 0 ? `Your ${formData.uploadedPhotos.length} uploaded mockup(s) will be reflected in the preview screens.` : 'Upload UI mockups above to see them in the preview screens, or AI placeholders will be used.'}</p>
+        )}
+
+        {!templatesMinimized && !uiTemplates && !generatingTemplates && (
+          <div className="border-2 border-dashed border-gray-200 rounded-xl p-12 text-center">
+            <Eye size={48} className="mx-auto text-gray-300 mb-3" />
+            <p className="text-gray-400 text-sm">Click "Generate Previews" to create UI templates based on your Step 1 & 2 inputs</p>
+          </div>
+        )}
+
+        {!templatesMinimized && generatingTemplates && (
+          <div className="border-2 border-dashed border-purple-200 rounded-xl p-12 text-center bg-purple-50">
+            <Loader2 size={48} className="mx-auto text-purple-400 mb-3 animate-spin" />
+            <p className="text-purple-500 text-sm font-medium">Designing UI templates for your app...</p>
+          </div>
+        )}
+
+        {!templatesMinimized && uiTemplates && uiTemplates.length > 0 && !generatingTemplates && (() => {
+          // Determine image sources: user photos/logo or AI gradient placeholders
+          const hasLogo = formData.primaryLogo?.base64;
+          const hasPhotos = formData.uploadedPhotos.length > 0;
+          const userPhotos = formData.uploadedPhotos.filter(p => p.base64).map(p => p.base64);
+          const logoSrc = hasLogo ? formData.primaryLogo.base64 : null;
+
+          return (
+          <div className="space-y-8">
+            {uiTemplates.map((template, tIdx) => {
+              const accentColors = {
+                cool: { gradient: 'from-blue-500 to-cyan-500', bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', badge: 'bg-blue-100 text-blue-700', wireframeBg: '#EFF6FF', wireframeAccent: formData.primaryColor || '#3B82F6', secondary: formData.secondaryColor || '#06B6D4' },
+                warm: { gradient: 'from-orange-500 to-rose-500', bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', badge: 'bg-orange-100 text-orange-700', wireframeBg: '#FFF7ED', wireframeAccent: formData.primaryColor || '#F97316', secondary: formData.secondaryColor || '#F43F5E' },
+                neutral: { gradient: 'from-slate-500 to-gray-600', bg: 'bg-gray-50', border: 'border-gray-300', text: 'text-gray-700', badge: 'bg-gray-200 text-gray-700', wireframeBg: '#F9FAFB', wireframeAccent: formData.primaryColor || '#6B7280', secondary: formData.secondaryColor || '#475569' },
+              };
+              const accent = accentColors[template.colorAccent] || accentColors.cool;
+
+              // Image slot: user photo → AI-relevant stock image → gradient fallback
+              const queries = template.imageQueries || [];
+              const gradientFallbacks = [
+                `linear-gradient(135deg, ${accent.wireframeAccent}30, ${accent.secondary}25)`,
+                `linear-gradient(45deg, ${accent.secondary}20, ${accent.wireframeAccent}35)`,
+                `radial-gradient(circle at 30% 40%, ${accent.wireframeAccent}25, ${accent.secondary}15, transparent 70%)`,
+                `linear-gradient(160deg, ${accent.wireframeAccent}15 0%, ${accent.secondary}30 50%, ${accent.wireframeAccent}20 100%)`,
+              ];
+
+              // Image slot with gradient fallback behind the img
+              const ImageSlot = ({ idx, className = '', style = {} }) => {
+                const photoIdx = (tIdx * 3 + idx) % Math.max(userPhotos.length, 1);
+                if (hasPhotos && userPhotos[photoIdx]) {
+                  return <img src={userPhotos[photoIdx]} alt="" className={`object-cover ${className}`} style={style} />;
+                }
+                const keyword = queries[idx % queries.length] || formData.appName || 'technology';
+                const encodedKeyword = encodeURIComponent(keyword);
+                const imgUrl = `https://loremflickr.com/400/250/${encodedKeyword}?lock=${tIdx * 10 + idx}`;
+                const fallbackBg = gradientFallbacks[idx % gradientFallbacks.length];
+                return (
+                  <div className={`relative ${className}`} style={style}>
+                    {/* Gradient shown behind while image loads, and as fallback */}
+                    <div className="absolute inset-0" style={{ background: fallbackBg, borderRadius: style.borderRadius || 0 }} />
+                    <img
+                      src={imgUrl}
+                      alt={keyword}
+                      className="absolute inset-0 w-full h-full object-cover"
+                      style={{ borderRadius: style.borderRadius || 0 }}
+                      loading="lazy"
+                      onError={(e) => { e.target.style.display = 'none'; }}
+                    />
+                  </div>
+                );
+              };
+
+              // Logo slot: user logo or styled initials
+              const getLogoSlot = (size = 24) => {
+                if (logoSrc) {
+                  return <img src={logoSrc} alt="" className="object-contain" style={{ width: size, height: size, borderRadius: 4 }} />;
+                }
+                return (
+                  <div className="flex items-center justify-center font-bold text-white rounded" style={{ width: size, height: size, background: accent.wireframeAccent, fontSize: size * 0.4 }}>
+                    {(formData.appName || 'A').charAt(0).toUpperCase()}
+                  </div>
+                );
+              };
+
+              return (
+                <div key={tIdx} className={`border-2 ${accent.border} rounded-2xl overflow-hidden shadow-sm`}>
+                  {/* Template Header */}
+                  <div className={`bg-gradient-to-r ${accent.gradient} px-6 py-5 flex items-center justify-between`}>
+                    <div className="flex items-center gap-3">
+                      {getLogoSlot(36)}
+                      <div>
+                        <h5 className="text-white font-bold text-lg">{template.templateName}</h5>
+                        <p className="text-white/80 text-sm mt-0.5">{template.bestFit}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="bg-white/20 text-white text-xs font-semibold px-3 py-1.5 rounded-full backdrop-blur-sm">
+                        Template {tIdx + 1}
+                      </span>
+                      <button
+                        onClick={() => { setSelectedTemplateIdx(tIdx); setTemplatesMinimized(true); }}
+                        className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${
+                          selectedTemplateIdx === tIdx
+                            ? 'bg-white text-green-700 shadow-md'
+                            : 'bg-white/30 text-white hover:bg-white/50 backdrop-blur-sm'
+                        }`}
+                      >
+                        {selectedTemplateIdx === tIdx ? <><Check size={12} className="inline mr-1" />Selected</> : 'Select'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Screens Preview */}
+                  <div className="p-6">
+                    <div className="grid grid-cols-3 gap-5 mb-6">
+                      {(template.screens || []).slice(0, 3).map((screen, sIdx) => {
+                        const a = accent.wireframeAccent;
+                        const s = accent.secondary;
+                        const rd = "rounded-md";
+
+                        // Larger wireframes with image/logo integration
+                        const renderWireframe = (type) => {
+                          switch (type) {
+                            case 'dashboard':
+                              return (
+                                <div className="flex gap-1.5 h-full">
+                                  <div className={`w-1/4 ${rd} flex flex-col items-center pt-2 gap-2`} style={{ background: a, opacity: 0.12 }}>
+                                    {getLogoSlot(18)}
+                                    {[1,2,3,4].map(i => <div key={i} className="w-3/4 h-1.5 rounded" style={{ background: a, opacity: 0.2 }} />)}
+                                  </div>
+                                  <div className="flex-1 flex flex-col gap-1.5">
+                                    <div className={`h-5 ${rd} flex items-center px-2 justify-between`} style={{ background: a, opacity: 0.08 }}>
+                                      <div className="w-12 h-2 rounded" style={{ background: a, opacity: 0.2 }} />
+                                      <div className="w-5 h-5 rounded-full" style={{ background: a, opacity: 0.15 }} />
+                                    </div>
+                                    <div className="flex-1 grid grid-cols-2 gap-1.5">
+                                      <div className={`${rd} p-1.5 flex flex-col justify-between`} style={{ background: a, opacity: 0.06 }}>
+                                        <div className="w-8 h-1.5 rounded" style={{ background: a, opacity: 0.2 }} />
+                                        <div className="text-center font-bold" style={{ color: a, opacity: 0.3, fontSize: 10 }}>248</div>
+                                      </div>
+                                      <div className={`${rd} overflow-hidden`}>
+                                        <ImageSlot idx={sIdx} className="w-full h-full" style={{ borderRadius: 6 }} />
+                                      </div>
+                                      <div className={`${rd} overflow-hidden`}>
+                                        <ImageSlot idx={sIdx + 1} className="w-full h-full" style={{ borderRadius: 6 }} />
+                                      </div>
+                                      <div className={`${rd} p-1.5 flex flex-col justify-between`} style={{ background: s, opacity: 0.08 }}>
+                                        <div className="w-6 h-1.5 rounded" style={{ background: s, opacity: 0.25 }} />
+                                        <div className="w-full h-2 rounded" style={{ background: s, opacity: 0.15 }} />
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            case 'kanban':
+                              return (
+                                <div className="flex flex-col gap-1.5 h-full">
+                                  <div className={`h-6 ${rd} flex items-center justify-between px-2`} style={{ background: a, opacity: 0.1 }}>
+                                    {getLogoSlot(14)}
+                                    <div className="flex gap-1">{[1,2,3].map(i=><div key={i} className="w-4 h-1.5 rounded" style={{ background: a, opacity: 0.2 }} />)}</div>
+                                  </div>
+                                  <div className="flex-1 flex gap-1.5">
+                                    {[0.06, 0.08, 0.06].map((o, i) => (
+                                      <div key={i} className={`flex-1 flex flex-col gap-1 p-1.5 ${rd}`} style={{ background: a, opacity: o }}>
+                                        <div className="h-2 w-2/3 rounded" style={{ background: a, opacity: 0.2 }} />
+                                        {[1,2,3].map(j => (
+                                          <div key={j} className={`${rd} p-1`} style={{ background: '#fff', opacity: 0.8 }}>
+                                            <div className="h-1 w-3/4 rounded mb-0.5" style={{ background: a, opacity: 0.15 }} />
+                                            <div className="h-1 w-1/2 rounded" style={{ background: a, opacity: 0.1 }} />
+                                          </div>
+                                        ))}
+                                        {i === 1 && <div className={`${rd} overflow-hidden h-8`}><ImageSlot idx={sIdx} className="w-full h-full" style={{ borderRadius: 4 }} /></div>}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              );
+                            case 'hero':
+                            case 'landing':
+                              return (
+                                <div className="flex flex-col gap-1.5 h-full">
+                                  <div className={`h-6 ${rd} flex items-center justify-between px-2`} style={{ background: a, opacity: 0.08 }}>
+                                    {getLogoSlot(14)}
+                                    <div className="flex gap-1">{[1,2,3,4].map(i=><div key={i} className="w-4 h-1.5 rounded" style={{ background: a, opacity: 0.15 }} />)}</div>
+                                  </div>
+                                  <div className={`flex-1 ${rd} flex overflow-hidden`}>
+                                    <div className="w-1/2 flex flex-col justify-center gap-1.5 p-2">
+                                      <div className="h-2.5 w-4/5 rounded" style={{ background: a, opacity: 0.25 }} />
+                                      <div className="h-1.5 w-full rounded" style={{ background: a, opacity: 0.1 }} />
+                                      <div className="h-1.5 w-3/4 rounded" style={{ background: a, opacity: 0.1 }} />
+                                      <div className="h-4 w-14 rounded mt-1" style={{ background: a, opacity: 0.25 }} />
+                                    </div>
+                                    <div className="w-1/2 overflow-hidden" style={{ borderRadius: 6 }}>
+                                      <ImageSlot idx={sIdx} className="w-full h-full" style={{}} />
+                                    </div>
+                                  </div>
+                                  <div className="grid grid-cols-3 gap-1 h-10">
+                                    {[0, 1, 2].map((i) => (
+                                      <div key={i} className={`${rd} p-1.5 flex flex-col items-center justify-center`} style={{ background: a, opacity: 0.05 }}>
+                                        <div className="w-3 h-3 rounded-full mb-0.5" style={{ background: a, opacity: 0.15 }} />
+                                        <div className="w-3/4 h-1 rounded" style={{ background: a, opacity: 0.1 }} />
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              );
+                            case 'table':
+                            case 'list':
+                              return (
+                                <div className="flex flex-col gap-1 h-full">
+                                  <div className={`h-6 ${rd} flex items-center justify-between px-2`} style={{ background: a, opacity: 0.1 }}>
+                                    {getLogoSlot(14)}
+                                    <div className="flex gap-1">
+                                      <div className="w-12 h-2.5 rounded" style={{ background: a, opacity: 0.08 }} />
+                                      <div className="w-5 h-2.5 rounded" style={{ background: a, opacity: 0.2 }} />
+                                    </div>
+                                  </div>
+                                  <div className={`h-4 ${rd} flex items-center gap-2 px-2`} style={{ background: a, opacity: 0.15 }}>
+                                    {['25%','35%','20%','20%'].map((w,i)=><div key={i} className="h-1.5 rounded" style={{ width: w, background: '#fff', opacity: 0.6 }} />)}
+                                  </div>
+                                  {[0.04, 0.02, 0.04, 0.02, 0.04].map((o, i) => (
+                                    <div key={i} className={`h-4 ${rd} flex items-center gap-2 px-2`} style={{ background: a, opacity: o }}>
+                                      {i === 0 && <div className="w-4 h-4 rounded overflow-hidden flex-shrink-0"><ImageSlot idx={sIdx} className="w-full h-full" style={{}} /></div>}
+                                      {['25%','35%','20%','20%'].map((w,j)=><div key={j} className="h-1.5 rounded" style={{ width: w, background: a, opacity: 0.12 }} />)}
+                                    </div>
+                                  ))}
+                                </div>
+                              );
+                            case 'analytics':
+                              return (
+                                <div className="flex flex-col gap-1.5 h-full">
+                                  <div className={`h-6 ${rd} flex items-center justify-between px-2`} style={{ background: a, opacity: 0.08 }}>
+                                    {getLogoSlot(14)}
+                                    <div className="w-6 h-2.5 rounded" style={{ background: a, opacity: 0.15 }} />
+                                  </div>
+                                  <div className="flex gap-1.5 h-8">
+                                    {[a, s, a].map((c, i) => (
+                                      <div key={i} className={`flex-1 ${rd} p-1.5 flex flex-col justify-between`} style={{ background: c, opacity: 0.07 }}>
+                                        <div className="w-6 h-1 rounded" style={{ background: c, opacity: 0.25 }} />
+                                        <div className="font-bold" style={{ color: c, opacity: 0.3, fontSize: 9 }}>{['1.2K','89%','$4.5K'][i]}</div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <div className={`flex-1 ${rd} p-1.5`} style={{ background: a, opacity: 0.04 }}>
+                                    <div className="flex items-end h-full gap-1 px-1">
+                                      {[55,75,40,90,65,50,80,60,85,45].map((h, i) => (
+                                        <div key={i} className="flex-1 rounded-t" style={{ height: `${h}%`, background: i % 2 === 0 ? a : s, opacity: 0.2 }} />
+                                      ))}
+                                    </div>
+                                  </div>
+                                  <div className={`h-6 ${rd} overflow-hidden`}><ImageSlot idx={sIdx + 2} className="w-full h-full" style={{ borderRadius: 6 }} /></div>
+                                </div>
+                              );
+                            case 'form':
+                            case 'detail':
+                              return (
+                                <div className="flex flex-col gap-1.5 h-full">
+                                  <div className={`h-6 ${rd} flex items-center px-2 gap-2`} style={{ background: a, opacity: 0.1 }}>
+                                    {getLogoSlot(14)}
+                                    <div className="w-10 h-1.5 rounded" style={{ background: a, opacity: 0.2 }} />
+                                  </div>
+                                  <div className="flex gap-1.5 flex-1">
+                                    <div className="flex-1 flex flex-col gap-1.5">
+                                      {[1,2,3].map(i => (
+                                        <div key={i} className="flex flex-col gap-0.5">
+                                          <div className={`h-2 w-1/3 ${rd}`} style={{ background: a, opacity: 0.15 }} />
+                                          <div className={`h-4 ${rd}`} style={{ background: a, opacity: 0.05 }} />
+                                        </div>
+                                      ))}
+                                      <div className={`h-5 w-1/3 ${rd} mt-auto`} style={{ background: a, opacity: 0.25 }} />
+                                    </div>
+                                    <div className={`w-1/3 ${rd} overflow-hidden`}>
+                                      <ImageSlot idx={sIdx} className="w-full h-full" style={{ borderRadius: 6 }} />
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            case 'settings':
+                            case 'profile':
+                              return (
+                                <div className="flex gap-1.5 h-full">
+                                  <div className={`w-1/3 ${rd} flex flex-col gap-1.5 p-2`} style={{ background: a, opacity: 0.05 }}>
+                                    {getLogoSlot(16)}
+                                    {[1,2,3,4,5,6].map(i => <div key={i} className={`h-2 ${rd}`} style={{ background: a, opacity: i === 2 ? 0.2 : 0.08 }} />)}
+                                  </div>
+                                  <div className="flex-1 flex flex-col gap-1.5">
+                                    <div className={`h-6 ${rd} flex items-center px-2 justify-between`} style={{ background: a, opacity: 0.06 }}>
+                                      <div className="w-10 h-1.5 rounded" style={{ background: a, opacity: 0.2 }} />
+                                      <div className="w-5 h-5 rounded-full overflow-hidden"><ImageSlot idx={sIdx} className="w-full h-full" style={{}} /></div>
+                                    </div>
+                                    <div className={`h-16 ${rd} overflow-hidden`}><ImageSlot idx={sIdx + 1} className="w-full h-full" style={{ borderRadius: 6 }} /></div>
+                                    <div className={`flex-1 ${rd} p-1.5 flex flex-col gap-1`} style={{ background: a, opacity: 0.04 }}>
+                                      {[1,2,3].map(i => (
+                                        <div key={i} className="flex items-center justify-between">
+                                          <div className="w-1/3 h-1.5 rounded" style={{ background: a, opacity: 0.12 }} />
+                                          <div className="w-6 h-3 rounded-full" style={{ background: i === 1 ? a : '#ddd', opacity: 0.25 }} />
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            case 'chat':
+                              return (
+                                <div className="flex flex-col gap-1.5 h-full">
+                                  <div className={`h-6 ${rd} flex items-center px-2 gap-2`} style={{ background: a, opacity: 0.1 }}>
+                                    {getLogoSlot(14)}
+                                    <div className="w-12 h-1.5 rounded" style={{ background: a, opacity: 0.2 }} />
+                                  </div>
+                                  <div className="flex-1 flex flex-col gap-1.5 px-1">
+                                    <div className="flex gap-1 items-end">
+                                      <div className="w-4 h-4 rounded-full overflow-hidden flex-shrink-0"><ImageSlot idx={0} className="w-full h-full" style={{}} /></div>
+                                      <div className={`${rd} px-2 py-1 max-w-[70%]`} style={{ background: a, opacity: 0.08 }}><div className="h-1 w-10 rounded" style={{ background: a, opacity: 0.15 }} /><div className="h-1 w-6 rounded mt-0.5" style={{ background: a, opacity: 0.1 }} /></div>
+                                    </div>
+                                    <div className="flex gap-1 items-end justify-end">
+                                      <div className={`${rd} px-2 py-1 max-w-[70%]`} style={{ background: a, opacity: 0.18 }}><div className="h-1 w-12 rounded" style={{ background: '#fff', opacity: 0.5 }} /></div>
+                                    </div>
+                                    <div className="flex gap-1 items-end">
+                                      <div className="w-4 h-4 rounded-full overflow-hidden flex-shrink-0"><ImageSlot idx={1} className="w-full h-full" style={{}} /></div>
+                                      <div className={`${rd} overflow-hidden h-10 w-16`}><ImageSlot idx={sIdx} className="w-full h-full" style={{ borderRadius: 6 }} /></div>
+                                    </div>
+                                  </div>
+                                  <div className={`h-5 ${rd} flex items-center px-2 gap-1`} style={{ background: a, opacity: 0.06 }}>
+                                    <div className="flex-1 h-2.5 rounded" style={{ background: a, opacity: 0.06 }} />
+                                    <div className="w-5 h-3 rounded" style={{ background: a, opacity: 0.2 }} />
+                                  </div>
+                                </div>
+                              );
+                            case 'calendar':
+                              return (
+                                <div className="flex flex-col gap-1.5 h-full">
+                                  <div className={`h-6 ${rd} flex items-center justify-between px-2`} style={{ background: a, opacity: 0.08 }}>
+                                    {getLogoSlot(14)}
+                                    <div className="flex gap-0.5">{['Mo','Tu','We'].map(d=><span key={d} style={{ fontSize: 6, color: a, opacity: 0.3 }}>{d}</span>)}</div>
+                                  </div>
+                                  <div className="flex-1 grid grid-cols-7 grid-rows-5 gap-0.5">
+                                    {Array.from({length: 35}, (_, i) => (
+                                      <div key={i} className={rd} style={{ background: [3,11,17,24].includes(i) ? a : a, opacity: [3,11,17,24].includes(i) ? 0.2 : 0.04, position: 'relative' }}>
+                                        {i === 11 && <div className="absolute inset-0 overflow-hidden rounded"><ImageSlot idx={sIdx} className="w-full h-full" style={{}} /></div>}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              );
+                            default:
+                              return (
+                                <div className="flex flex-col gap-1.5 h-full">
+                                  <div className={`h-6 ${rd} flex items-center px-2 gap-2`} style={{ background: a, opacity: 0.1 }}>
+                                    {getLogoSlot(14)}
+                                    <div className="w-10 h-1.5 rounded" style={{ background: a, opacity: 0.15 }} />
+                                  </div>
+                                  <div className={`flex-1 ${rd} overflow-hidden`}><ImageSlot idx={sIdx} className="w-full h-full" style={{ borderRadius: 6 }} /></div>
+                                  <div className={`h-8 ${rd}`} style={{ background: a, opacity: 0.06 }} />
+                                </div>
+                              );
+                          }
+                        };
+
+                        return (
+                          <div key={sIdx} className={`${accent.bg} rounded-xl overflow-hidden border ${accent.border} shadow-sm`}>
+                            {/* Wireframe — larger */}
+                            <div className="h-56 p-3" style={{ background: accent.wireframeBg }}>
+                              {renderWireframe(screen.type)}
+                            </div>
+                            {/* Screen info */}
+                            <div className="px-4 py-3 border-t" style={{ borderColor: accent.wireframeAccent + '20' }}>
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="font-semibold text-sm text-gray-800">{screen.name}</span>
+                                <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-medium ${accent.badge}`}>{screen.type}</span>
+                              </div>
+                              <div className="space-y-1">
+                                {(screen.sections || []).slice(0, 5).map((sec, secIdx) => (
+                                  <div key={secIdx} className="flex items-center text-xs text-gray-500">
+                                    <div className="w-1.5 h-1.5 rounded-full mr-2 flex-shrink-0" style={{ background: accent.wireframeAccent, opacity: 0.5 }} />
+                                    {sec}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Components & Meta */}
+                    <div className="flex flex-wrap gap-2">
+                      {(template.components || []).map((comp, cIdx) => (
+                        <span key={cIdx} className={`text-xs px-3 py-1.5 rounded-lg font-medium ${accent.badge}`}>
+                          {comp}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          );
+        })()}
       </div>
     </div>
   );
@@ -2288,6 +2634,84 @@ export default function PRDGenerator() {
   // Step 3: Generate PRD
   const renderStep3 = () => (
     <div className="space-y-6 bg-blue-50 p-6 rounded-2xl">
+      {/* Timeline & Project Details */}
+      <div>
+        <label className="flex items-center text-base font-bold text-gray-800 mb-4">
+          <span className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-sm font-bold mr-3">1</span>
+          Timeline & Project Details
+          <HelpTooltip text={HELP_TEXTS.timeline} />
+        </label>
+
+        <div className="grid grid-cols-3 gap-4 mb-4">
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-2">Project Type</label>
+            <select
+              value={formData.projectType}
+              onChange={(e) => handleInputChange('projectType', e.target.value)}
+              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg outline-none focus:border-blue-400"
+            >
+              <option value="">Select</option>
+              <option value="internal">Internal</option>
+              <option value="poc">POC</option>
+              <option value="paid">Paid</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-2">Due Date</label>
+            <input
+              type="date"
+              value={formData.dueDate}
+              onChange={(e) => handleInputChange('dueDate', e.target.value)}
+              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg outline-none focus:border-blue-400"
+            />
+          </div>
+          <div className="flex items-end">
+            <button
+              onClick={addMilestone}
+              className="w-full px-4 py-3 bg-blue-500 text-white font-semibold rounded-lg hover:bg-blue-600"
+            >
+              Add Milestone
+            </button>
+          </div>
+        </div>
+
+        {formData.milestones.length > 0 && (
+          <div className="space-y-3">
+            <h4 className="font-semibold text-gray-700">Milestones</h4>
+            {formData.milestones.map((milestone) => (
+              <div key={milestone.id} className="flex gap-3 p-3 bg-blue-50 rounded-lg">
+                <input
+                  type="text"
+                  value={milestone.name}
+                  onChange={(e) => updateMilestone(milestone.id, 'name', e.target.value)}
+                  className="flex-1 px-3 py-2 border border-blue-200 rounded"
+                  placeholder="Name"
+                />
+                <input
+                  type="date"
+                  value={milestone.date}
+                  onChange={(e) => updateMilestone(milestone.id, 'date', e.target.value)}
+                  className="px-3 py-2 border border-blue-200 rounded"
+                />
+                <input
+                  type="text"
+                  value={milestone.description}
+                  onChange={(e) => updateMilestone(milestone.id, 'description', e.target.value)}
+                  className="flex-1 px-3 py-2 border border-blue-200 rounded"
+                  placeholder="Description"
+                />
+                <button
+                  onClick={() => removeMilestone(milestone.id)}
+                  className="p-2 text-red-500 hover:bg-red-50 rounded"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* BuLLM PRD Review Checklist */}
       <div className="bg-white rounded-xl border-2 border-gray-200 p-6">
         <h4 className="font-bold text-gray-800 mb-4 flex items-center">
@@ -2328,6 +2752,26 @@ export default function PRDGenerator() {
       <div className="bg-white rounded-xl border-2 border-gray-200 p-6">
         <h4 className="font-bold text-gray-800 mb-4">Next Steps</h4>
         <div className="grid grid-cols-3 gap-4">
+          <div className="p-6 bg-gradient-to-br from-purple-50 to-indigo-50 border-2 border-purple-200 rounded-xl hover:shadow-lg transition-all">
+            <Download size={32} className="mx-auto mb-3 text-purple-600" />
+            <div className="font-bold text-purple-900 mb-1">1. Scope of Work</div>
+            <div className="text-xs text-purple-700 mb-3">Export as PDF or DOC</div>
+            <div className="flex gap-2 justify-center">
+              <button
+                onClick={() => downloadScopeOfWork('pdf')}
+                className="px-4 py-1.5 bg-purple-500 text-white rounded-lg text-xs font-semibold hover:bg-purple-600 transition-all"
+              >
+                PDF
+              </button>
+              <button
+                onClick={() => downloadScopeOfWork('docx')}
+                className="px-4 py-1.5 bg-indigo-500 text-white rounded-lg text-xs font-semibold hover:bg-indigo-600 transition-all"
+              >
+                DOC
+              </button>
+            </div>
+          </div>
+
           <button
             onClick={generatePRD}
             disabled={activeAiField === 'generatePRD'}
@@ -2338,7 +2782,7 @@ export default function PRDGenerator() {
             ) : (
               <FileText size={32} className="mx-auto mb-3 text-blue-600" />
             )}
-            <div className="font-bold text-blue-900 mb-1">1. Generate PRD</div>
+            <div className="font-bold text-blue-900 mb-1">2. Generate PRD</div>
             <div className="text-xs text-blue-700">Create comprehensive document</div>
           </button>
 
@@ -2348,22 +2792,8 @@ export default function PRDGenerator() {
             className="p-6 bg-gradient-to-br from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl hover:shadow-lg transition-all disabled:opacity-50"
           >
             <Send size={32} className="mx-auto mb-3 text-green-600" />
-            <div className="font-bold text-green-900 mb-1">2. Sales Proposal</div>
+            <div className="font-bold text-green-900 mb-1">3. Sales Proposal</div>
             <div className="text-xs text-green-700">Convert to proposal</div>
-          </button>
-
-          <button
-            onClick={() => handleExportPRD('pdf')}
-            disabled={!formData.generatedPRD || isExporting}
-            className="p-6 bg-gradient-to-br from-blue-50 to-cyan-50 border-2 border-blue-200 rounded-xl hover:shadow-lg transition-all disabled:opacity-50"
-          >
-            {isExporting ? (
-              <Loader2 size={32} className="mx-auto mb-3 text-blue-600 animate-spin" />
-            ) : (
-              <Download size={32} className="mx-auto mb-3 text-blue-600" />
-            )}
-            <div className="font-bold text-blue-900 mb-1">3. Export</div>
-            <div className="text-xs text-blue-700">PDF, DOC, JSON, MD</div>
           </button>
         </div>
       </div>
@@ -2480,24 +2910,8 @@ export default function PRDGenerator() {
             className="w-24 h-24 mx-auto mb-6 object-contain"
           />
           <h1 className="text-5xl font-black text-gray-900 mb-3">
-            BuLLM Application Builder
+            BuLLMake PRD Generator
           </h1>
-          <p className="text-xl text-gray-600 font-medium">PRD Generator</p>
-        </div>
-
-        {/* Progress */}
-        <div className="flex justify-center items-center space-x-3 mb-8">
-          {STEPS.map((step, index) => (
-            <div
-              key={step.id}
-              className={`transition-all duration-300 rounded-full ${index === currentStep
-                  ? `w-12 h-3 bg-gradient-to-r ${step.gradient}`
-                  : index < currentStep
-                    ? 'w-3 h-3 bg-gray-400'
-                    : 'w-3 h-3 bg-gray-300'
-                }`}
-            />
-          ))}
         </div>
 
         <div className="mb-8">
@@ -2545,15 +2959,6 @@ export default function PRDGenerator() {
               </button>
 
               <div className="flex items-center gap-3">
-                {currentStep < STEPS.length - 1 && (
-                  <button
-                    onClick={() => setCurrentStep(prev => Math.min(prev + 1, STEPS.length - 1))}
-                    className="px-6 py-3 bg-white text-gray-600 rounded-xl font-bold border-2 border-gray-300 hover:bg-gray-100 hover:border-gray-400 transition-all"
-                  >
-                    Skip
-                  </button>
-                )}
-
                 {currentStep === STEPS.length - 1 ? (
                   <div className="text-sm text-gray-600">
                     Final step - Generate and deploy
