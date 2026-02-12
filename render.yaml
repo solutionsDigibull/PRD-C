@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: PRD-generator
+    runtime: node
+    plan: free
+    buildCommand: cd frontend && npm install && npm run build && cd ../backend && npm install
+    startCommand: cd backend && node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AI_PROVIDER
+        value: openai
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: CLAUDE_API_KEY
+        sync: false
+      - key: REACT_APP_API_URL
+        value: /api/ai
+    healthCheckPath: /api/health
