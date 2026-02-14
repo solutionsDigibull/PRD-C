@@ -1,4 +1,4 @@
-// Custom hook for form data management (no persistence - resets on refresh)
+// Custom hook for form data management
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { INITIAL_FORM_DATA } from '../constants';
@@ -9,8 +9,6 @@ import { INITIAL_FORM_DATA } from '../constants';
  */
 export const useFormData = () => {
   const [formData, setFormData] = useState(INITIAL_FORM_DATA);
-  const [autoSaveStatus, setAutoSaveStatus] = useState('saved');
-  const [lastSaved, setLastSaved] = useState(null);
   const formDataRef = useRef(formData);
 
   // Keep ref in sync with state
@@ -18,28 +16,9 @@ export const useFormData = () => {
     formDataRef.current = formData;
   }, [formData]);
 
-  // Auto-save every 5 seconds silently
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (autoSaveStatus === 'unsaved') {
-        setAutoSaveStatus('saved');
-        setLastSaved(new Date());
-      }
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [autoSaveStatus]);
-
-  // No-op save function (kept for API compatibility)
-  const saveFormData = useCallback(() => {
-    setAutoSaveStatus('saved');
-    setLastSaved(new Date());
-    return true;
-  }, []);
-
   // Handle input change
   const handleInputChange = useCallback((field, value) => {
     setFormData(prev => ({ ...prev, [field]: value }));
-    setAutoSaveStatus('unsaved');
   }, []);
 
   // Handle nested object change (e.g., appStructure, selectedTechStack)
@@ -51,7 +30,6 @@ export const useFormData = () => {
         [childField]: value
       }
     }));
-    setAutoSaveStatus('unsaved');
   }, []);
 
   // Handle array item update (e.g., competitors, milestones)
@@ -61,7 +39,6 @@ export const useFormData = () => {
       newArray[index] = { ...newArray[index], [itemField]: value };
       return { ...prev, [field]: newArray };
     });
-    setAutoSaveStatus('unsaved');
   }, []);
 
   // Add item to array
@@ -70,7 +47,6 @@ export const useFormData = () => {
       ...prev,
       [field]: [...prev[field], item]
     }));
-    setAutoSaveStatus('unsaved');
   }, []);
 
   // Remove item from array
@@ -79,7 +55,6 @@ export const useFormData = () => {
       ...prev,
       [field]: prev[field].filter((_, i) => i !== index)
     }));
-    setAutoSaveStatus('unsaved');
   }, []);
 
   // Remove item from array by value
@@ -88,7 +63,6 @@ export const useFormData = () => {
       ...prev,
       [field]: prev[field].filter(item => item !== value)
     }));
-    setAutoSaveStatus('unsaved');
   }, []);
 
   // Load previous tech stack (no-op without persistence)
@@ -99,19 +73,11 @@ export const useFormData = () => {
   // Reset form to initial state
   const resetForm = useCallback(() => {
     setFormData(INITIAL_FORM_DATA);
-    setAutoSaveStatus('saved');
   }, []);
-
-  // Force save immediately (no-op without persistence)
-  const forceSave = useCallback(() => {
-    return saveFormData();
-  }, [saveFormData]);
 
   return {
     formData,
     setFormData,
-    autoSaveStatus,
-    lastSaved,
     handleInputChange,
     handleNestedChange,
     handleArrayItemUpdate,
@@ -119,9 +85,7 @@ export const useFormData = () => {
     removeFromArray,
     removeFromArrayByValue,
     loadPreviousTechStack,
-    resetForm,
-    forceSave,
-    saveFormData
+    resetForm
   };
 };
 

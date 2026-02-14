@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useParams } from 'react-router-dom';
 import { ArrowRight, ArrowLeft, Sparkles, Rocket, Palette, FileText, Wand2, Upload, Check, X, Search, Link, FolderArchive, Users, Send, Info, Download, Camera, Eye, CheckCircle2, FileCheck, Settings, AlertCircle, Loader2, RefreshCw, FolderSearch, Play, ChevronDown, ChevronUp, Shield, BookOpen } from 'lucide-react';
 
 // Import hooks and utilities
-import { useFormData, useAI } from '../hooks';
+import { useFormData, useAI, useAutoSave } from '../hooks';
+import { useAuth } from '../hooks/useAuth';
+import { getProject } from '../services/projectService';
 import { calculateContrast } from '../utils/colorUtils';
 import { filesToBase64, isImage, formatFileSize, getFileIcon } from '../utils/fileUtils';
 import { exportPRD, exportToPDF, exportToDOCX, downloadBlob } from '../utils/exportUtils';
@@ -134,9 +136,39 @@ export default function PRDGenerator() {
     addToArray,
     removeFromArray,
     removeFromArrayByValue,
-    loadPreviousTechStack,
-    forceSave
+    loadPreviousTechStack
   } = useFormData();
+
+  // Get project ID from URL (/app/project/:id)
+  const { id: projectId } = useParams();
+  const { user } = useAuth();
+
+  // Auto-save to Supabase (5s debounce)
+  const { autoSaveStatus, lastSaved } = useAutoSave(projectId, formData);
+
+  // Loading state for initial project load
+  const [projectLoading, setProjectLoading] = useState(true);
+
+  // Load existing project data on mount
+  useEffect(() => {
+    async function loadProject() {
+      if (!projectId) {
+        setProjectLoading(false);
+        return;
+      }
+      try {
+        const project = await getProject(projectId);
+        if (project?.form_data) {
+          setFormData(project.form_data);
+        }
+      } catch (err) {
+        console.error('Failed to load project:', err);
+      } finally {
+        setProjectLoading(false);
+      }
+    }
+    loadProject();
+  }, [projectId, setFormData]);
 
   // AI hook
   const {
@@ -935,7 +967,6 @@ export default function PRDGenerator() {
       return;
     }
     if (currentStep < STEPS.length - 1) {
-      forceSave();
       setCurrentStep(currentStep + 1);
     }
   };
@@ -3404,6 +3435,17 @@ export default function PRDGenerator() {
     </div>
   );
 
+  if (projectLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-10 h-10 animate-spin text-blue-500 mx-auto mb-3" />
+          <p className="text-gray-500 text-sm">Loading project...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100">
       <div className="relative max-w-5xl mx-auto px-4 py-12">
@@ -3441,6 +3483,9 @@ export default function PRDGenerator() {
                 <div className="text-3xl font-black" style={{ color: currentStepData.color }}>
                   {currentStep + 1}/{STEPS.length}
                 </div>
+                {autoSaveStatus === 'saving' && <span className="text-yellow-600 text-xs mt-1 block">Saving...</span>}
+                {autoSaveStatus === 'saved' && <span className="text-green-600 text-xs mt-1 block">Saved</span>}
+                {autoSaveStatus === 'error' && <span className="text-red-600 text-xs mt-1 block">Save failed</span>}
               </div>
             </div>
           </div>
