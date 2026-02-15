@@ -49,9 +49,9 @@ ENV PORT=5000
 # Expose the port
 EXPOSE 5000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:5000/api/health || exit 1
+# Health check — fetch actual response (not just headers) to confirm Express is serving
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD wget -q -O /dev/null http://0.0.0.0:5000/api/health || exit 1
 
 # Start the backend server (serves frontend build in production)
 WORKDIR /app/backend
