@@ -55,7 +55,9 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Backend server running on http://localhost:${PORT}`);
+// Bind to 0.0.0.0 so the server is reachable from outside the container
+// (Coolify's reverse proxy connects via the container's network interface, not localhost)
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Backend server running on http://0.0.0.0:${PORT}`);
   console.log(`📡 AI Provider: ${process.env.AI_PROVIDER || 'openai'}`);
 });
