@@ -3,27 +3,84 @@
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || '/api/ai';
 
+// Helper: delay for retry backoff
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 class AIService {
   constructor() {
     this.isReady = false;
     this.provider = 'openai';
+    this.apiBaseUrl = API_BASE_URL;
   }
 
-  // Check if backend is configured
+  // Resolve the effective API base URL (handles relative paths)
+  getEffectiveUrl(endpoint) {
+    return `${this.apiBaseUrl}${endpoint}`;
+  }
+
+  // Check if backend is configured — with retry and fallback
   async checkStatus() {
-    try {
-      const response = await fetch(`${API_BASE_URL}/status`);
-      if (response.ok) {
-        const data = await response.json();
-        this.isReady = data.configured;
-        this.provider = data.provider;
-        return data;
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY_MS = 1500;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        // Primary: try /api/ai/status
+        const response = await fetch(this.getEffectiveUrl('/status'), {
+          signal: AbortSignal.timeout(5000),
+        });
+        if (response.ok) {
+          const data = await response.json();
+          this.isReady = data.configured;
+          this.provider = data.provider;
+          return data;
+        }
+
+        // Non-OK response — try /api/health as fallback
+        try {
+          const healthUrl = this.apiBaseUrl.replace(/\/api\/ai\/?$/, '/api/health');
+          const healthResp = await fetch(healthUrl, {
+            signal: AbortSignal.timeout(5000),
+          });
+          if (healthResp.ok) {
+            const healthData = await healthResp.json();
+            this.isReady = healthData.configured;
+            this.provider = healthData.provider;
+            return healthData;
+          }
+        } catch (_) {
+          // health fallback failed, continue to retry
+        }
+
+        return { configured: false, provider: 'openai' };
+      } catch (error) {
+        console.warn(`Backend status check attempt ${attempt}/${MAX_RETRIES} failed:`, error.message);
+
+        if (attempt < MAX_RETRIES) {
+          await delay(RETRY_DELAY_MS * attempt);
+          continue;
+        }
+
+        // All retries exhausted — return error with details
+        const errorDetail =
+          error.name === 'TimeoutError'
+            ? 'Request timed out'
+            : error.name === 'TypeError'
+              ? 'Network error — backend may be unreachable'
+              : error.message;
+
+        console.error('Backend status check failed after all retries:', errorDetail);
+        return {
+          configured: false,
+          provider: 'openai',
+          error: 'Backend not running',
+          errorDetail,
+          apiUrl: this.apiBaseUrl,
+        };
       }
-      return { configured: false, provider: 'openai' };
-    } catch (error) {
-      console.error('Backend status check failed:', error);
-      return { configured: false, provider: 'openai', error: 'Backend not running' };
     }
+
+    return { configured: false, provider: 'openai', error: 'Backend not running' };
   }
 
   isConfigured() {

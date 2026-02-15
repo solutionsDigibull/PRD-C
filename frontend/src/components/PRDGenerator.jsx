@@ -177,6 +177,7 @@ export default function PRDGenerator() {
     isConfigured: aiConfigured,
     provider,
     backendStatus,
+    statusErrorDetail,
     enhanceProblemStatement,
     enhanceGoal,
     suggestOutOfScope,
@@ -3838,10 +3839,15 @@ export default function PRDGenerator() {
               {backendStatus === 'error' && (
                 <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800">
                   <AlertCircle size={16} className="inline mr-2" />
-                  Backend server is not running. Start it with:
+                  Backend server is not reachable. Start it with:
                   <code className="block mt-2 p-2 bg-red-100 rounded text-xs">
                     cd backend && npm start
                   </code>
+                  {statusErrorDetail && (
+                    <p className="mt-2 text-xs text-red-600">
+                      Error: {statusErrorDetail}
+                    </p>
+                  )}
                 </div>
               )}
 

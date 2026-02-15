@@ -13,6 +13,7 @@ export const useAI = () => {
   const [isConfigured, setIsConfigured] = useState(false);
   const [provider, setProvider] = useState('openai');
   const [backendStatus, setBackendStatus] = useState('checking');
+  const [statusErrorDetail, setStatusErrorDetail] = useState(null);
 
   // Check backend status on mount
   useEffect(() => {
@@ -21,6 +22,7 @@ export const useAI = () => {
       const status = await aiService.checkStatus();
       setIsConfigured(status.configured);
       setProvider(status.provider);
+      setStatusErrorDetail(status.errorDetail || null);
       setBackendStatus(status.error ? 'error' : (status.configured ? 'ready' : 'not_configured'));
     };
     checkBackend();
@@ -215,9 +217,11 @@ export const useAI = () => {
 
   // Refresh backend status
   const refreshStatus = useCallback(async () => {
+    setBackendStatus('checking');
     const status = await aiService.checkStatus();
     setIsConfigured(status.configured);
     setProvider(status.provider);
+    setStatusErrorDetail(status.errorDetail || null);
     setBackendStatus(status.error ? 'error' : (status.configured ? 'ready' : 'not_configured'));
     return status;
   }, []);
@@ -234,6 +238,7 @@ export const useAI = () => {
     isConfigured,
     provider,
     backendStatus,
+    statusErrorDetail,
 
     // AI Methods (existing)
     enhanceProblemStatement,
